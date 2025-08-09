@@ -36,13 +36,62 @@ class TestCaseService:
         try:
             logger.info("Starting test case generation", 
                        feature_description=request.feature_description[:100])
-            
+
+            # Strict duplicate check in DB
+            existing_case = await self.test_case_repository.find_by_feature_and_criteria(
+                request.feature_description.strip(),
+                request.acceptance_criteria.strip()
+            )
+            if existing_case:
+                logger.info("Exact duplicate found in DB, returning existing test case", test_case_id=existing_case.id)
+                return GenerateTestCaseResponse(
+                    test_case=existing_case,
+                    similar_cases=[],
+                    generation_metadata={
+                        "ai_model_used": "existing_duplicate",
+                        "duplicate_detection": True,
+                        "original_test_case_id": existing_case.id
+                    }
+                )
+
             # First, search for similar test cases
             similar_cases = await self.memory_service.search_similar(
                 feature_description=request.feature_description,
                 limit=5,
                 threshold=0.7
             )
+            
+            # Check if we have a very similar test case (high similarity threshold)
+            duplicate_threshold = 0.95
+            potential_duplicate = None
+            
+            if similar_cases:
+                for similar_case in similar_cases:
+                    if similar_case.similarity_score >= duplicate_threshold:
+                        # Check if feature description and acceptance criteria are very similar
+                        if (similar_case.test_case.feature_description.strip().lower() == 
+                            request.feature_description.strip().lower() and
+                            similar_case.test_case.acceptance_criteria.strip().lower() == 
+                            request.acceptance_criteria.strip().lower()):
+                            potential_duplicate = similar_case.test_case
+                            break
+            
+            # If duplicate found, return it instead of creating new one
+            if potential_duplicate:
+                logger.info("Found potential duplicate test case, returning existing one", 
+                           existing_test_case_id=potential_duplicate.id)
+                
+                return GenerateTestCaseResponse(
+                    test_case=potential_duplicate,
+                    similar_cases=similar_cases,
+                    generation_metadata={
+                        "ai_model_used": "existing_duplicate",
+                        "similar_cases_found": len(similar_cases),
+                        "generation_timestamp": potential_duplicate.created_at.isoformat(),
+                        "duplicate_detection": True,
+                        "original_test_case_id": potential_duplicate.id
+                    }
+                )
             
             # Generate new test case using AI
             ai_test_case = await self.ai_service.generate_test_case(request)
@@ -63,7 +112,9 @@ class TestCaseService:
                 generation_metadata={
                     "ai_model_used": "openai",
                     "similar_cases_found": len(similar_cases),
-                    "generation_timestamp": saved_test_case.created_at.isoformat()
+                    "generation_timestamp": saved_test_case.created_at.isoformat(),
+                    "duplicate_detection": False,
+                    "is_new_generation": True
                 }
             )
             
