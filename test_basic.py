@@ -13,7 +13,7 @@ async def health_check():
 
 if __name__ == "__main__":
     print("🚀 Starting Test Case Generator API (Basic Test)...")
-    print("📚 Open: http://localhost:8000")
-    print("📚 Docs: http://localhost:8000/docs")
+    print("📚 Open: http://localhost:4200")
+    print("📚 Docs: http://localhost:4200/docs")
     print("🔄 Use Ctrl+C to stop")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=4200)
