@@ -30,6 +30,16 @@ class TestCaseService:
         self.ai_service = ai_service
         self.jira_service = jira_service
         self.zephyr_service = zephyr_service
+        
+    async def get_jira_ticket(self, ticket_key: str) -> Optional[dict]:
+        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123)"""
+        try:
+            logger.info("Fetching JIRA ticket from JiraService", ticket_key=ticket_key)
+            ticket_data = await self.jira_service.get_issue(ticket_key)
+            return ticket_data
+        except Exception as e:
+            logger.error("Failed to fetch JIRA ticket from JiraService", ticket_key=ticket_key, error=str(e))
+            return None
     
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> GenerateTestCaseResponse:
         """Generate a new test case using AI and memory search"""
