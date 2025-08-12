@@ -61,7 +61,7 @@ class TestCaseService:
                 test_case=saved_test_case,
                 similar_cases=similar_cases,
                 generation_metadata={
-                    "ai_model_used": "openai",
+                    "ai_model_used": "gemini",
                     "similar_cases_found": len(similar_cases),
                     "generation_timestamp": saved_test_case.created_at.isoformat()
                 }

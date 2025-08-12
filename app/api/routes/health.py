@@ -31,7 +31,7 @@ async def readiness_check():
     checks = {
         "database": "ok",
         "chromadb": "ok",
-        "openai": "ok" if settings.openai_api_key else "not_configured"
+        "gemini": "ok" if settings.gemini_api_key else "not_configured"
     }
     
     all_ok = all(status == "ok" for status in checks.values())

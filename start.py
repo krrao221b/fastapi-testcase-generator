@@ -41,8 +41,8 @@ def main():
     data_dir.mkdir(exist_ok=True)
     
     print("🌟 Starting FastAPI server...")
-    print("📚 API Documentation: http://localhost:8000/api/v1/docs")
-    print("🏥 Health Check: http://localhost:8000/api/v1/health")
+    print("📚 API Documentation: http://localhost:4200/api/v1/docs")
+    print("🏥 Health Check: http://localhost:4200/api/v1/health")
     print("🔄 Use Ctrl+C to stop the server")
     
     # Start the server
@@ -51,7 +51,7 @@ def main():
         uvicorn.run(
             "main:app",
             host="0.0.0.0",
-            port=8000,
+            port=4200,
             reload=True,
             log_level="info"
         )

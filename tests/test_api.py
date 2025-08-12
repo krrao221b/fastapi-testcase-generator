@@ -35,7 +35,7 @@ async def test_generate_test_case_endpoint(client):
         "tags": ["authentication"]
     }
     
-    # Note: This test might fail without proper OpenAI API key
+    # Note: This test might fail without proper Gemini API key
     # In a real environment, you'd mock the AI service
     response = await client.post("/api/v1/test-cases/generate", json=request_data)
     

@@ -75,8 +75,8 @@ function Invoke-Install {
 
 function Invoke-Run {
     Write-Host "🚀 Starting Test Case Generator API..." -ForegroundColor Green
-    Write-Host "📚 API Documentation will be available at: http://localhost:8000/api/v1/docs" -ForegroundColor Cyan
-    Write-Host "🏥 Health Check: http://localhost:8000/api/v1/health" -ForegroundColor Cyan
+    Write-Host "📚 API Documentation will be available at: http://localhost:4200/api/v1/docs" -ForegroundColor Cyan
+    Write-Host "🏥 Health Check: http://localhost:4200/api/v1/health" -ForegroundColor Cyan
     Write-Host "🔄 Use Ctrl+C to stop the server" -ForegroundColor Yellow
     Write-Host ""
     

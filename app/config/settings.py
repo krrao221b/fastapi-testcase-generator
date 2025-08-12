@@ -7,13 +7,12 @@ class Settings(BaseSettings):
     debug: bool = False
     environment: str = "development"
     api_host: str = "0.0.0.0"
-    api_port: int = 8000
+    api_port: int = 4200
     api_prefix: str = "/api/v1"
     
-    # OpenAI Configuration
-    openai_api_key: str
-    openai_model: str = "gpt-3.5-turbo"
-    openai_embedding_model: str = "text-embedding-ada-002"
+    # Gemini Configuration
+    gemini_api_key: str
+    gemini_model: str = "gemini-1.5-flash"
     
     # ChromaDB Configuration
     chroma_persist_directory: str = "./data/chroma_db"

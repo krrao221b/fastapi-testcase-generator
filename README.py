@@ -10,7 +10,7 @@ Architecture Overview:
 - Interface-based design following SOLID principles
 
 Key Features:
-- AI-powered test case generation using OpenAI
+- AI-powered test case generation using Google Gemini
 - Semantic similarity search using ChromaDB
 - JIRA integration for issue management
 - Zephyr integration for test management
@@ -21,7 +21,7 @@ Usage:
 1. Copy .env.example to .env and configure your API keys
 2. Install dependencies: pip install -r requirements.txt
 3. Run the application: python main.py
-4. Access API docs at: http://localhost:8000/api/v1/docs
+4. Access API docs at: http://localhost:4200/api/v1/docs
 
 API Endpoints:
 - POST /api/v1/test-cases/generate - Generate new test case

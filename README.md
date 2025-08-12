@@ -21,7 +21,7 @@ app/
 
 ## 🚀 Features
 
-- **AI-Powered Generation**: Uses OpenAI GPT for intelligent test case creation
+- **AI-Powered Generation**: Uses Google Gemini for intelligent test case creation
 - **Memory Search**: ChromaDB for semantic similarity matching
 - **JIRA Integration**: Seamless integration with Atlassian JIRA
 - **Zephyr Integration**: Test management with Zephyr Scale
@@ -37,7 +37,7 @@ app/
 | **Framework**  | FastAPI 0.104+                 |
 | **Database**   | SQLAlchemy + SQLite/PostgreSQL |
 | **Vector DB**  | ChromaDB                       |
-| **AI Service** | OpenAI GPT-3.5/4               |
+| **AI Service** | Google Gemini                  |
 | **Validation** | Pydantic V2                    |
 | **Logging**    | Structlog                      |
 | **Testing**    | Pytest + AsyncIO               |
@@ -75,8 +75,8 @@ python main.py
 Required environment variables:
 
 ```env
-# OpenAI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
+# Gemini Configuration
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Optional Integrations
 JIRA_BASE_URL=https://your-domain.atlassian.net
@@ -92,8 +92,8 @@ ZEPHYR_SECRET_KEY=your_zephyr_secret_key
 
 Once running, visit:
 
-- **Interactive Docs**: http://localhost:8000/api/v1/docs
-- **ReDoc**: http://localhost:8000/api/v1/redoc
+- **Interactive Docs**: http://localhost:4200/api/v1/docs
+- **ReDoc**: http://localhost:4200/api/v1/redoc
 
 ## 🏃‍♂️ Quick Start
 
@@ -105,7 +105,7 @@ import httpx
 async def generate_test_case():
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/api/v1/test-cases/generate",
+            "http://localhost:4200/api/v1/test-cases/generate",
             json={
                 "feature_description": "User login functionality",
                 "acceptance_criteria": "User should be able to login with valid credentials",
@@ -122,7 +122,7 @@ async def generate_test_case():
 async def search_similar():
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            "http://localhost:8000/api/v1/test-cases/search-similar",
+            "http://localhost:4200/api/v1/test-cases/search-similar",
             json={
                 "feature_description": "User authentication",
                 "limit": 5,
@@ -205,7 +205,7 @@ flake8 app/
 
 Perfect for team development:
 
-- **Team A**: AI prompt design (`repositories/implementations/openai_service.py`)
+- **Team A**: AI prompt design (`repositories/implementations/gemini_service.py`)
 - **Team B**: API endpoints (`api/routes/`)
 - **Team C**: Frontend integration (consuming the APIs)
 - **Team D**: Database and memory operations (`repositories/implementations/`)
