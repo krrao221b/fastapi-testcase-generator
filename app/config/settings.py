@@ -21,9 +21,9 @@ class Settings(BaseSettings):
     chroma_collection_name: str = "test_cases"
     
     # JIRA Integration
-    jira_base_url: Optional[str] = None
-    jira_username: Optional[str] = None
-    jira_api_token: Optional[str] = None
+    jira_base_url: Optional[str] = "https://testcaseready.atlassian.net"
+    jira_username: Optional[str] = "achinthyabangera1@gmail.com"
+    jira_api_token: Optional[str] = "ATATT3xFfGF05XQMnQE9XnwN9Bdvv4XW6r-cvevXE3aZwZ7trpybe86RIvRgfTw5c5P-FQzxzwGBRTnkQPfff6tl0QVGd6KWQy9JpfLtUmgXG0rltq_icjfSM0fbEbypS6eSisJXMx9Z2A0y0I7kUpdtRqO03YKrWQV-KsXGZsR8ask-hNIQwCQ=5B99F483"
     
     # Zephyr Integration
     zephyr_base_url: Optional[str] = None

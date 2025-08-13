@@ -56,11 +56,10 @@ class AtlassianJiraService(IJiraService):
             return None
     
     async def get_issue(self, issue_key: str) -> Optional[Dict[str, Any]]:
-        """Get JIRA issue details"""
+        """Get JIRA issue details and return a simplified dict for frontend."""
         if not self._is_configured():
             logger.warning("JIRA service not configured")
             return None
-        
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -68,17 +67,65 @@ class AtlassianJiraService(IJiraService):
                     auth=self.auth,
                     headers={"Accept": "application/json"}
                 )
-                
                 if response.status_code == 200:
                     issue_data = response.json()
-                    logger.info("JIRA issue retrieved successfully", issue_key=issue_key)
-                    return issue_data
+                    fields = issue_data.get("fields", {})
+                    # Extract plain text from Atlassian Document Format
+                    def extract_plain_text(desc):
+                        if isinstance(desc, dict) and "content" in desc:
+                            text_parts = []
+                            def extract(node):
+                                if isinstance(node, dict):
+                                    if node.get("type") == "text":
+                                        text_parts.append(node.get("text", ""))
+                                    elif "content" in node:
+                                        for child in node["content"]:
+                                            extract(child)
+                                elif isinstance(node, list):
+                                    for item in node:
+                                        extract(item)
+                            extract(desc["content"])
+                            return " ".join(text_parts)
+                        elif isinstance(desc, str):
+                            return desc
+                        return ""
+                    description = extract_plain_text(fields.get("description"))
+                    summary = fields.get("summary", "")
+                    status = fields.get("status", {}).get("name", "")
+                    priority = fields.get("priority", {}).get("name", "")
+                    assignee = fields.get("assignee", {}).get("displayName", "") if fields.get("assignee") else ""
+                    attachments = [
+                        {
+                            "filename": att.get("filename"),
+                            "url": att.get("content")
+                        }
+                        for att in fields.get("attachment", [])
+                    ]
+                    import re
+                    split = re.split(r'Acceptance Criteria[:\n]+', description, flags=re.IGNORECASE)
+                    acceptance_criteria = split[1].strip() if len(split) > 1 else ""
+                    acceptance_criteria = re.sub(r'!\S+?\.(jpg|png|jpeg|gif)[^!]*!', '', acceptance_criteria, flags=re.IGNORECASE).strip()
+                    acceptance_criteria = re.sub(r'\[.*?\|.*?\]', '', acceptance_criteria)
+                    acceptance_criteria = "\n".join([line for line in acceptance_criteria.splitlines() if line.strip()])
+                    if not acceptance_criteria:
+                        custom_ac_field = fields.get("customfield_10000")
+                        if custom_ac_field:
+                            acceptance_criteria = str(custom_ac_field).strip()
+                    return {
+                        "key": issue_data.get("key"),
+                        "summary": summary,
+                        "description": description,
+                        "acceptance_criteria": acceptance_criteria,
+                        "status": status,
+                        "priority": priority,
+                        "assignee": assignee,
+                        "attachments": attachments,
+                    }
                 else:
                     logger.error("Failed to get JIRA issue", 
                                issue_key=issue_key,
                                status_code=response.status_code)
                     return None
-                    
         except Exception as e:
             logger.error("Error getting JIRA issue", issue_key=issue_key, error=str(e))
             return None
@@ -160,55 +207,51 @@ class AtlassianJiraService(IJiraService):
             return False
     
     async def get_acceptance_criteria(self, issue_key: str) -> Optional[str]:
-        """Extract acceptance criteria from JIRA issue"""
+        """Extract acceptance criteria from JIRA issue, cleaning markup and supporting custom fields."""
         issue_data = await self.get_issue(issue_key)
         if not issue_data:
             return None
-        
         try:
             fields = issue_data.get("fields", {})
-            
-            # Try to get acceptance criteria from description
-            description = fields.get("description", {})
-            if isinstance(description, dict) and "content" in description:
-                # Extract text from Atlassian Document Format
-                content = description["content"]
-                text_parts = []
-                
-                def extract_text(node):
-                    if isinstance(node, dict):
-                        if node.get("type") == "text":
-                            text_parts.append(node.get("text", ""))
-                        elif "content" in node:
-                            for child in node["content"]:
-                                extract_text(child)
-                    elif isinstance(node, list):
-                        for item in node:
-                            extract_text(item)
-                
-                extract_text(content)
-                full_text = " ".join(text_parts)
-                
-                # Look for acceptance criteria section
-                import re
-                ac_match = re.search(r'acceptance criteria[:\s]*(.*?)(?=\n\n|\Z)', 
-                                   full_text, re.IGNORECASE | re.DOTALL)
-                if ac_match:
-                    return ac_match.group(1).strip()
-                
-                return full_text
-            
-            # Fallback to custom field if configured
-            # This would need to be configured based on your JIRA setup
-            custom_ac_field = fields.get("customfield_10000")  # Example custom field
-            if custom_ac_field:
-                return custom_ac_field
-            
-            return None
-            
+            description = fields.get("description")
+            import re
+            def extract_plain_text(desc):
+                # Atlassian Document Format
+                if isinstance(desc, dict) and "content" in desc:
+                    text_parts = []
+                    def extract(node):
+                        if isinstance(node, dict):
+                            if node.get("type") == "text":
+                                text_parts.append(node.get("text", ""))
+                            elif "content" in node:
+                                for child in node["content"]:
+                                    extract(child)
+                        elif isinstance(node, list):
+                            for item in node:
+                                extract(item)
+                    extract(desc["content"])
+                    return " ".join(text_parts)
+                elif isinstance(desc, str):
+                    return desc
+                return ""
+            full_text = extract_plain_text(description)
+            # Split on 'Acceptance Criteria' (case-insensitive)
+            split = re.split(r'Acceptance Criteria[:\n]+', full_text, flags=re.IGNORECASE)
+            ac = split[1].strip() if len(split) > 1 else ""
+            # Remove Jira image/file markup
+            ac = re.sub(r'!\S+?\.(jpg|png|jpeg|gif)[^!]*!', '', ac, flags=re.IGNORECASE).strip()
+            # Remove Jira smart links and other link clutter: [text|url|smart-link] or [text|url]
+            ac = re.sub(r'\[.*?\|.*?\]', '', ac)
+            # Remove any trailing empty lines
+            ac = "\n".join([line for line in ac.splitlines() if line.strip()])
+            # Fallback to custom field if not found
+            if not ac:
+                custom_ac_field = fields.get("customfield_10000")
+                if custom_ac_field:
+                    return str(custom_ac_field).strip()
+            return ac if ac else None
         except Exception as e:
-            logger.error("Error extracting acceptance criteria", 
-                        issue_key=issue_key, error=str(e))
+            logger.error("Error extracting acceptance criteria", issue_key=issue_key, error=str(e))
             return None
     
     def _is_configured(self) -> bool:
