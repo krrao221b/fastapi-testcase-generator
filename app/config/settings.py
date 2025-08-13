@@ -11,9 +11,10 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     
     # OpenAI Configuration
-    openai_api_key: str
-    openai_model: str = "gpt-3.5-turbo"
-    openai_embedding_model: str = "text-embedding-ada-002"
+    openai_api_key: str = "Add_Your_API_Key_Guys"
+    openai_base_url: str = "https://models.github.ai/inference"
+    openai_model: str = "openai/gpt-4.1"
+    openai_embedding_model: str = "text-embedding-3-large"
     
     # ChromaDB Configuration
     chroma_persist_directory: str = "./data/chroma_db"
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/testcases.db"
     
     # Security
-    secret_key: str
+    secret_key: str 
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
