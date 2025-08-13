@@ -35,7 +35,7 @@ class OpenAIService(IAIService):
                     model=self.model
                 )
                 generated_content = response.choices[0].message.content or ""
-                parse_test_case_data = self._parse_generated_test_case(generated_content, request)
+                parsed = self._parse_generated_test_case(generated_content, request)
                 return TestCase(**parsed)
             except Exception as e:
                 logger.error("Failed to generate test case", error=str(e))
