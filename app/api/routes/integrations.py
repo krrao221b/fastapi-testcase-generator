@@ -9,6 +9,34 @@ logger = structlog.get_logger()
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 
+
+# GET endpoint to fetch JIRA ticket details by ticket key
+@router.get("/jira/{ticket_key}")
+async def get_jira_ticket(
+    ticket_key: str,
+    service: TestCaseService = Depends(get_test_case_service)
+):
+    """Fetch JIRA ticket details by ticket key (e.g., PROJ-123)"""
+    try:
+        logger.info("Fetching JIRA ticket", ticket_key=ticket_key)
+        # Replace with actual service call to fetch ticket details
+        ticket_data = await service.get_jira_ticket(ticket_key)
+        if not ticket_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"JIRA ticket {ticket_key} not found"
+            )
+        return ticket_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to fetch JIRA ticket", ticket_key=ticket_key, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch JIRA ticket {ticket_key}"
+        )
+
+# Existing POST endpoint for JIRA integration
 @router.post("/jira/{test_case_id}")
 async def integrate_with_jira(
     test_case_id: int,
@@ -26,7 +54,6 @@ async def integrate_with_jira(
                 )
             else:
                 return {"message": "No JIRA integration found for this test case"}
-        
         return {
             "test_case_id": test_case_id,
             "jira_issue_key": issue_key,

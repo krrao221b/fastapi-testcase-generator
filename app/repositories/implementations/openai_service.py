@@ -1,7 +1,8 @@
-import openai
+import asyncio
+import json
 from typing import List
 from datetime import datetime
-import json
+from openai import OpenAI
 import structlog
 from app.repositories.interfaces.ai_service import IAIService
 from app.models.schemas import GenerateTestCaseRequest, TestCase, TestStep, TestCaseStatus
@@ -9,83 +10,113 @@ from app.config.settings import settings
 
 logger = structlog.get_logger()
 
-
 class OpenAIService(IAIService):
-    """OpenAI implementation of AI service"""
-    
+    """GitHub Copilot Models API implementation of AI service"""
     def __init__(self):
-        self.client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+        self.client = OpenAI(
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key
+        )
         self.model = settings.openai_model
         self.embedding_model = settings.openai_embedding_model
-    
+        
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> TestCase:
-        """Generate a test case using OpenAI"""
-        try:
-            prompt = self._build_test_case_prompt(request)
-            
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            
-            generated_content = response.choices[0].message.content
-            test_case_data = self._parse_generated_test_case(generated_content, request)
-            
-            logger.info("Test case generated successfully", 
-                       feature_description=request.feature_description)
-            
-            return TestCase(**test_case_data)
-            
-        except Exception as e:
-            logger.error("Failed to generate test case", 
-                        feature_description=request.feature_description, error=str(e))
-            # Return a basic test case as fallback
-            return self._create_fallback_test_case(request)
-    
+        """Generate a test case using Copilot Models API (async wrapper)"""
+        def sync_call():
+            try:
+                prompt = self._build_test_case_prompt(request)
+                response = self.client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": self._get_system_prompt()},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.8,
+                    top_p=0.9,
+                    model=self.model
+                )
+                generated_content = response.choices[0].message.content or ""
+                parsed = self._parse_generated_test_case(generated_content, request)
+                return TestCase(**parsed)
+            except Exception as e:
+                logger.error("Failed to generate test case", error=str(e))
+                return self._create_fallback_test_case(request)
+        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+
     async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding for a given text"""
-        try:
-            response = await self.client.embeddings.create(
-                model=self.embedding_model,
-                input=text
-            )
-            return response.data[0].embedding
-            
-        except Exception as e:
-            logger.error("Failed to generate embedding", text=text[:100], error=str(e))
-            return []
-    
+        """Generate embedding for a given text using Copilot Models API (async wrapper)"""
+        def sync_call():
+            try:
+                response = self.client.embeddings.create(
+                    input=text,
+                    model=self.embedding_model
+                )
+                return response.data[0].embedding
+            except Exception as e:
+                logger.error("Failed to generate embedding", error=str(e))
+                return []
+        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+
     async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
-        """Improve an existing test case based on feedback"""
-        try:
-            prompt = self._build_improvement_prompt(test_case, feedback)
+        """Improve an existing test case based on feedback using Copilot Models API (async wrapper)"""
+        def sync_call():
+            try:
+                prompt = self._build_improvement_prompt(test_case, feedback)
+                response = self.client.chat.completions.create(
+                    messages=[
+                        {"role": "system", "content": self._get_improvement_system_prompt()},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.7,
+                    top_p=0.9,
+                    model=self.model
+                )
+                improved_content = response.choices[0].message.content or ""
+                parsed = self._parse_improved_test_case(improved_content, test_case)
+                return TestCase(**parsed)
+            except Exception as e:
+                logger.error("Failed to improve test case", error=str(e))
+                return test_case
+        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+    
+    # async def generate_embedding(self, text: str) -> List[float]:
+    #     """Generate embedding for a given text"""
+    #     try:
+    #         response = await self.client.embeddings.create(
+    #             model=self.embedding_model,
+    #             input=text
+    #         )
+    #         return response.data[0].embedding
             
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self._get_improvement_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.5,
-                max_tokens=2000
-            )
+    #     except Exception as e:
+    #         logger.error("Failed to generate embedding", text=text[:100], error=str(e))
+    #         return []
+    
+    # async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
+    #     """Improve an existing test case based on feedback"""
+    #     try:
+    #         prompt = self._build_improvement_prompt(test_case, feedback)
             
-            improved_content = response.choices[0].message.content
-            improved_data = self._parse_improved_test_case(improved_content, test_case)
+    #         response = await self.client.chat.completions.create(
+    #             model=self.model,
+    #             messages=[
+    #                 {"role": "system", "content": self._get_improvement_system_prompt()},
+    #                 {"role": "user", "content": prompt}
+    #             ],
+    #             temperature=0.5,
+    #             max_tokens=2000
+    #         )
             
-            logger.info("Test case improved successfully", test_case_id=test_case.id)
+    #         improved_content = response.choices[0].message.content
+    #         improved_data = self._parse_improved_test_case(improved_content, test_case)
             
-            return TestCase(**improved_data)
+    #         logger.info("Test case improved successfully", test_case_id=test_case.id)
             
-        except Exception as e:
-            logger.error("Failed to improve test case", 
-                        test_case_id=test_case.id, error=str(e))
-            return test_case  # Return original if improvement fails
+    #         return TestCase(**improved_data)
+            
+    #     except Exception as e:
+    #         logger.error("Failed to improve test case", 
+    #                     test_case_id=test_case.id, error=str(e))
+    #         return test_case  # Return original if improvement fails
     
     def _get_system_prompt(self) -> str:
         """Get system prompt for test case generation"""
@@ -183,6 +214,10 @@ Please provide an improved version addressing the feedback while maintaining the
             # Convert test_steps to TestStep objects
             test_steps = []
             for step_data in parsed_data.get("test_steps", []):
+                if 'test_data' not in step_data:
+                    step_data['test_data'] = None
+                if isinstance(step_data['test_data'], (dict, list)):
+                    step_data['test_data'] = json.dumps(step_data['test_data'])
                 test_steps.append(TestStep(**step_data))
             
             return {
@@ -218,6 +253,10 @@ Please provide an improved version addressing the feedback while maintaining the
             # Convert test_steps to TestStep objects
             test_steps = []
             for step_data in parsed_data.get("test_steps", []):
+                if 'test_data' not in step_data:
+                    step_data['test_data'] = None
+                if isinstance(step_data['test_data'], (dict, list)):
+                    step_data['test_data'] = json.dumps(step_data['test_data'])
                 test_steps.append(TestStep(**step_data))
             
             # Preserve original data and update with improvements
@@ -272,7 +311,8 @@ Please provide an improved version addressing the feedback while maintaining the
                 TestStep(
                     step_number=1,
                     action="Execute the feature as described",
-                    expected_result="Feature works according to acceptance criteria"
+                    expected_result="Feature works according to acceptance criteria",
+                    test_data=None
                 )
             ],
             expected_result="Test passes successfully",
