@@ -68,3 +68,13 @@ class SQLTestCaseRepository(ITestCaseRepository):
                 matching_cases.append(TestCase.model_validate(test_case))
         
         return matching_cases
+    
+    async def find_by_feature_and_criteria(self, feature_description: str, acceptance_criteria: str) -> Optional[TestCase]:
+        """Find a test case by exact feature description and acceptance criteria"""
+        db_test_case = self.db.query(TestCaseModel).filter(
+            TestCaseModel.feature_description == feature_description,
+            TestCaseModel.acceptance_criteria == acceptance_criteria
+        ).first()
+        if db_test_case:
+            return TestCase.model_validate(db_test_case)
+        return None

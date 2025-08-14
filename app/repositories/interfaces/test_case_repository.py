@@ -29,3 +29,8 @@ class ITestCaseRepository(ABC):
     @abstractmethod
     async def search_by_tags(self, tags: List[str]) -> List[TestCase]:
         pass
+    
+    @abstractmethod
+    async def find_by_feature_and_criteria(self, feature_description: str, acceptance_criteria: str) -> Optional[TestCase]:
+        """Find a test case by exact feature description and acceptance criteria"""
+        pass
