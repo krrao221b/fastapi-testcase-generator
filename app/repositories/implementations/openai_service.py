@@ -215,7 +215,7 @@ Please provide an improved version addressing the feedback while maintaining the
             test_steps = []
             for step_data in parsed_data.get("test_steps", []):
                 if 'test_data' not in step_data:
-                    step_data['test_data'] = None
+                    step_data['test_data'] = "N/A"
                 if isinstance(step_data['test_data'], (dict, list)):
                     step_data['test_data'] = json.dumps(step_data['test_data'])
                 test_steps.append(TestStep(**step_data))

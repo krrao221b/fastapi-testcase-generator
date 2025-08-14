@@ -89,7 +89,7 @@ class AtlassianJiraService(IJiraService):
                         elif isinstance(desc, str):
                             return desc
                         return ""
-                    description = extract_plain_text(fields.get("description"))
+                    description2 = extract_plain_text(fields.get("description"))
                     summary = fields.get("summary", "")
                     status = fields.get("status", {}).get("name", "")
                     priority = fields.get("priority", {}).get("name", "")
@@ -102,7 +102,8 @@ class AtlassianJiraService(IJiraService):
                         for att in fields.get("attachment", [])
                     ]
                     import re
-                    split = re.split(r'Acceptance Criteria[:\n]+', description, flags=re.IGNORECASE)
+                    split = re.split(r'Acceptance Criteria[:\n]+', description2, flags=re.IGNORECASE)
+                    description = split[0].strip()
                     acceptance_criteria = split[1].strip() if len(split) > 1 else ""
                     acceptance_criteria = re.sub(r'!\S+?\.(jpg|png|jpeg|gif)[^!]*!', '', acceptance_criteria, flags=re.IGNORECASE).strip()
                     acceptance_criteria = re.sub(r'\[.*?\|.*?\]', '', acceptance_criteria)
