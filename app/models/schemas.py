@@ -34,6 +34,7 @@ class TestCaseBase(BaseModel):
     preconditions: Optional[str] = Field(None, description="Preconditions for test execution")
     test_steps: List[TestStep] = Field(..., description="List of test steps")
     expected_result: str = Field(..., description="Overall expected result")
+    jira_issue_key: Optional[str] = Field(None, description="Associated JIRA issue key")
 
 
 class TestCaseCreate(TestCaseBase):
@@ -49,6 +50,7 @@ class TestCaseUpdate(BaseModel):
     test_steps: Optional[List[TestStep]] = None
     expected_result: Optional[str] = None
     status: Optional[TestCaseStatus] = None
+    jira_issue_key: Optional[str] = None
 
 
 class TestCase(TestCaseBase):
@@ -57,7 +59,6 @@ class TestCase(TestCaseBase):
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str] = None
-    jira_issue_key: Optional[str] = None
     zephyr_test_id: Optional[str] = None
 
     class Config:
@@ -70,6 +71,7 @@ class GenerateTestCaseRequest(BaseModel):
     additional_context: Optional[str] = Field(None, description="Additional context or requirements")
     priority: TestCasePriority = Field(default=TestCasePriority.MEDIUM)
     tags: List[str] = Field(default_factory=list)
+    jira_issue_key: Optional[str] = Field(None, description="JIRA issue key to associate with the test case")
 
 
 class SearchSimilarRequest(BaseModel):

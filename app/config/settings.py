@@ -26,15 +26,14 @@ class Settings(BaseSettings):
     jira_api_token: Optional[str] = "ATATT3xFfGF05XQMnQE9XnwN9Bdvv4XW6r-cvevXE3aZwZ7trpybe86RIvRgfTw5c5P-FQzxzwGBRTnkQPfff6tl0QVGd6KWQy9JpfLtUmgXG0rltq_icjfSM0fbEbypS6eSisJXMx9Z2A0y0I7kUpdtRqO03YKrWQV-KsXGZsR8ask-hNIQwCQ=5B99F483"
     
     # Zephyr Integration
-    zephyr_base_url: Optional[str] = None
-    zephyr_access_key: Optional[str] = None
-    zephyr_secret_key: Optional[str] = None
+    zephyr_base_url: Optional[str] = "https://eu.api.zephyrscale.smartbear.com/v2"
+    zephyr_api_token: Optional[str] = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJjb250ZXh0Ijp7ImJhc2VVcmwiOiJodHRwczovL3Rlc3RjYXNlcmVhZHkuYXRsYXNzaWFuLm5ldCIsInVzZXIiOnsiYWNjb3VudElkIjoiNzEyMDIwOmFjMmQyZTA1LTBhOTYtNGNmYi1hMzQzLWZiZjM3MzBkMTVhYyIsInRva2VuSWQiOiJhN2QzNDdjNS0wZTgzLTQyMzgtOTAwNC1iYzk1OWE2OGMzYjMifX0sImlzcyI6ImNvbS5rYW5vYWgudGVzdC1tYW5hZ2VyIiwic3ViIjoiMTMxYmUzMjMtMGZmZC0zMzk1LTk5MGUtNjU0NDkxMTNhMTgzIiwiZXhwIjoxNzg2NjUwMzk0LCJpYXQiOjE3NTUxMTQzOTR9.-D_zJgOMtdspe5x7gL2j8Xsk-STZNVoeFNtFS3dRGUE"
+
     
     # Database Configuration
     database_url: str = "sqlite:///./data/testcases.db"
     
     # Security
-    secret_key: str 
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
