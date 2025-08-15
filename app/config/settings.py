@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/testcases.db"
     
     # Security
+    secret_key: str = "your_secret_key"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     
