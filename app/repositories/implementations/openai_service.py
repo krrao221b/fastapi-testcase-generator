@@ -3,6 +3,7 @@ import json
 from typing import List
 from datetime import datetime
 from openai import OpenAI
+from openai import RateLimitError, APIStatusError
 import structlog
 import traceback
 from app.repositories.interfaces.ai_service import IAIService
@@ -24,100 +25,113 @@ class OpenAIService(IAIService):
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> TestCase:
         """Generate a test case using Copilot Models API (async wrapper)"""
         def sync_call():
+            # Visible debug: show client config (mask API key)
             try:
-                # Visible debug: show client config (mask API key)
-                try:
-                    api_key = getattr(self.client, 'api_key', None)
-                    if api_key:
-                        masked = api_key[:4] + '...' + api_key[-4:]
-                    else:
-                        masked = None
-                except Exception:
+                api_key = getattr(self.client, 'api_key', None)
+                if api_key:
+                    masked = api_key[:4] + '...' + api_key[-4:]
+                else:
                     masked = None
-                print("[debug] OpenAI client base:", getattr(self.client, 'base_url', settings.openai_base_url))
-                print("[debug] OpenAI client api_key (masked):", masked)
-                logger.info("OpenAI client info", base=getattr(self.client, 'base_url', settings.openai_base_url), api_key_masked=masked, model=self.model)
+            except Exception:
+                masked = None
 
-                prompt = self._build_test_case_prompt(request)
-                # Print a short preview of prompt to stdout (first 400 chars)
-                print("[debug] Prompt preview:", prompt[:400].replace('\n', ' '))
-                logger.info("Prompt built", prompt_preview=prompt[:200])
+            prompt = self._build_test_case_prompt(request)
 
-                print("[debug] Calling OpenAI chat.completions.create()")
-                response = self.client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": self._get_system_prompt()},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.8,
-                    top_p=0.9,
-                    model=self.model
-                )
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                top_p=0.9,
+                model=self.model
+            )
 
-                print("[debug] OpenAI call returned")
-                logger.info("OpenAI response received", response_repr=str(response)[:1000])
+#                 print("[debug] OpenAI call returned")
+#                 logger.info("OpenAI response received", response_repr=str(response)[:1000])
 
                 # Safely extract generated content
-                generated_content = ""
-                try:
-                    if hasattr(response, 'choices') and response.choices:
-                        choice = response.choices[0]
+            generated_content = ""
+            try:
+                if hasattr(response, 'choices') and response.choices:
+                    choice = response.choices[0]
                         # support different response shapes
-                        if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
-                            generated_content = choice.message.content
-                        else:
-                            generated_content = getattr(choice, 'text', "") or ""
-                except Exception as e:
-                    print("[debug] Failed to extract generated content:", e)
-
-                print("[debug] Generated content (preview):", (generated_content or "")[:400].replace('\n', ' '))
-                parsed = self._parse_generated_test_case(generated_content or "", request)
-                logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
-                return TestCase(**parsed)
+                    if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
+                        generated_content = choice.message.content
+                    else:
+                        generated_content = getattr(choice, 'text', "") or ""
             except Exception as e:
-                # Print and log full traceback and error details
-                print("[error] Exception in generate_test_case:", type(e).__name__, str(e))
-                traceback_str = traceback.format_exc()
-                print(traceback_str)
-                logger.error("Failed to generate test case", error=str(e), traceback=traceback_str)
-                return self._create_fallback_test_case(request)
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+                print("[debug] Failed to extract generated content:", e)
+
+#                 print("[debug] Generated content (preview):", (generated_content or "")[:400].replace('\n', ' '))
+            parsed = self._parse_generated_test_case(generated_content or "", request)
+            logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429: falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().generate_test_case(request)
+            logger.error("OpenAI API error (non-429)", error=str(e))
+            return self._create_fallback_test_case(request)
+        except Exception as e:
+            logger.error("Failed to generate test case", error=str(e))
+            return self._create_fallback_test_case(request)
 
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a given text using Copilot Models API (async wrapper)"""
         def sync_call():
-            try:
-                response = self.client.embeddings.create(
-                    input=text,
-                    model=self.embedding_model
-                )
-                return response.data[0].embedding
-            except Exception as e:
-                logger.error("Failed to generate embedding", error=str(e))
-                return []
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+            response = self.client.embeddings.create(
+                input=text,
+                model=self.embedding_model
+            )
+            return response.data[0].embedding
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429 (embedding): falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().generate_embedding(text)
+            logger.error("OpenAI API error (non-429) embedding", error=str(e))
+            return []
+        except Exception as e:
+            logger.error("Failed to generate embedding", error=str(e))
+            return []
 
     async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
         """Improve an existing test case based on feedback using Copilot Models API (async wrapper)"""
         def sync_call():
-            try:
-                prompt = self._build_improvement_prompt(test_case, feedback)
-                response = self.client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": self._get_improvement_system_prompt()},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    top_p=0.9,
-                    model=self.model
-                )
-                improved_content = response.choices[0].message.content or ""
-                parsed = self._parse_improved_test_case(improved_content, test_case)
-                return TestCase(**parsed)
-            except Exception as e:
-                logger.error("Failed to improve test case", error=str(e))
-                return test_case
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+            prompt = self._build_improvement_prompt(test_case, feedback)
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_improvement_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                top_p=0.9,
+                model=self.model
+            )
+            improved_content = response.choices[0].message.content or ""
+            parsed = self._parse_improved_test_case(improved_content, test_case)
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429 (improve): falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().improve_test_case(test_case, feedback)
+            logger.error("OpenAI API error (non-429) improve", error=str(e))
+            return test_case
+        except Exception as e:
+            logger.error("Failed to improve test case", error=str(e))
+            return test_case
     
    
     
