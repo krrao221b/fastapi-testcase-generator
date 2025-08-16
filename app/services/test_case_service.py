@@ -106,8 +106,27 @@ class TestCaseService:
             # Generate new test case using AI
             ai_test_case = await self.ai_service.generate_test_case(request)
             
+            # Create the test case data dictionary
+            test_case_data = ai_test_case.dict(exclude={"id", "created_at", "updated_at"})
+            
+            # Extract JIRA issue key from tags or use the provided jira_issue_key
+            jira_issue_key = request.jira_issue_key
+            
+            # If no explicit JIRA issue key provided, look for it in tags
+            if not jira_issue_key and request.tags:
+                for tag in request.tags:
+                    # Check if tag matches JIRA/SCRUM pattern (e.g., "SCRUM-22", "PROJ-123")
+                    if tag and '-' in tag and tag.split('-')[0].isalpha() and tag.split('-')[1].isdigit():
+                        jira_issue_key = tag
+                        break
+            
+            # Add JIRA issue key if found
+            if jira_issue_key:
+                test_case_data["jira_issue_key"] = jira_issue_key
+                logger.info("Assigned JIRA issue key to test case", jira_issue_key=jira_issue_key)
+                
             # Save the generated test case to database
-            test_case_create = TestCaseCreate(**ai_test_case.dict(exclude={"id", "created_at", "updated_at"}))
+            test_case_create = TestCaseCreate(**test_case_data)
             saved_test_case = await self.test_case_repository.create(test_case_create)
             
             # Store in vector database for future similarity searches
@@ -226,33 +245,6 @@ class TestCaseService:
             
         except Exception as e:
             logger.error("Failed to integrate with JIRA", 
-                        test_case_id=test_case_id, error=str(e))
-            raise
-    
-    async def integrate_with_zephyr(self, test_case_id: int, project_key: str) -> Optional[str]:
-        """Integrate test case with Zephyr"""
-        try:
-            test_case = await self.test_case_repository.get_by_id(test_case_id)
-            if not test_case:
-                return None
-            
-            # Create test case in Zephyr
-            zephyr_test_id = await self.zephyr_service.create_test_case(test_case, project_key)
-            
-            if zephyr_test_id:
-                # Update test case with Zephyr test ID
-                await self.test_case_repository.update(
-                    test_case_id,
-                    TestCaseUpdate(zephyr_test_id=zephyr_test_id)
-                )
-                
-                logger.info("Test case integrated with Zephyr", 
-                          test_case_id=test_case_id, zephyr_test_id=zephyr_test_id)
-            
-            return zephyr_test_id
-            
-        except Exception as e:
-            logger.error("Failed to integrate with Zephyr", 
                         test_case_id=test_case_id, error=str(e))
             raise
     

@@ -78,45 +78,7 @@ class OpenAIService(IAIService):
                 return test_case
         return await asyncio.get_event_loop().run_in_executor(None, sync_call)
     
-    # async def generate_embedding(self, text: str) -> List[float]:
-    #     """Generate embedding for a given text"""
-    #     try:
-    #         response = await self.client.embeddings.create(
-    #             model=self.embedding_model,
-    #             input=text
-    #         )
-    #         return response.data[0].embedding
-            
-    #     except Exception as e:
-    #         logger.error("Failed to generate embedding", text=text[:100], error=str(e))
-    #         return []
-    
-    # async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
-    #     """Improve an existing test case based on feedback"""
-    #     try:
-    #         prompt = self._build_improvement_prompt(test_case, feedback)
-            
-    #         response = await self.client.chat.completions.create(
-    #             model=self.model,
-    #             messages=[
-    #                 {"role": "system", "content": self._get_improvement_system_prompt()},
-    #                 {"role": "user", "content": prompt}
-    #             ],
-    #             temperature=0.5,
-    #             max_tokens=2000
-    #         )
-            
-    #         improved_content = response.choices[0].message.content
-    #         improved_data = self._parse_improved_test_case(improved_content, test_case)
-            
-    #         logger.info("Test case improved successfully", test_case_id=test_case.id)
-            
-    #         return TestCase(**improved_data)
-            
-    #     except Exception as e:
-    #         logger.error("Failed to improve test case", 
-    #                     test_case_id=test_case.id, error=str(e))
-    #         return test_case  # Return original if improvement fails
+   
     
     def _get_system_prompt(self) -> str:
         """Get system prompt for test case generation"""
@@ -317,5 +279,6 @@ Please provide an improved version addressing the feedback while maintaining the
             ],
             expected_result="Test passes successfully",
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            jira_issue_key=None
         )

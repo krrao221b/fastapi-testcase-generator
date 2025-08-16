@@ -12,9 +12,8 @@ class ZephyrScaleService(IZephyrService):
     """Zephyr Scale (formerly Zephyr for JIRA) implementation"""
     
     def __init__(self):
-        self.base_url = settings.zephyr_base_url
-        self.access_key = settings.zephyr_access_key
-        self.secret_key = settings.zephyr_secret_key
+        self.base_url = "https://eu.api.zephyrscale.smartbear.com/v2"
+        self.api_token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJjb250ZXh0Ijp7ImJhc2VVcmwiOiJodHRwczovL3Rlc3RjYXNlcmVhZHkuYXRsYXNzaWFuLm5ldCIsInVzZXIiOnsiYWNjb3VudElkIjoiNzEyMDIwOmFjMmQyZTA1LTBhOTYtNGNmYi1hMzQzLWZiZjM3MzBkMTVhYyIsInRva2VuSWQiOiJhN2QzNDdjNS0wZTgzLTQyMzgtOTAwNC1iYzk1OWE2OGMzYjMifX0sImlzcyI6ImNvbS5rYW5vYWgudGVzdC1tYW5hZ2VyIiwic3ViIjoiMTMxYmUzMjMtMGZmZC0zMzk1LTk5MGUtNjU0NDkxMTNhMTgzIiwiZXhwIjoxNzg2NjUwMzk0LCJpYXQiOjE3NTUxMTQzOTR9.-D_zJgOMtdspe5x7gL2j8Xsk-STZNVoeFNtFS3dRGUE"
     
     async def create_test_case(self, test_case: TestCase, project_key: str) -> Optional[str]:
         """Create a test case in Zephyr and return the test ID"""
@@ -241,16 +240,10 @@ class ZephyrScaleService(IZephyrService):
     
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get authentication headers for Zephyr API"""
-        # This is a simplified implementation
-        # In production, you'd implement proper JWT token generation for Zephyr
-        import base64
-        credentials = f"{self.access_key}:{self.secret_key}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-        
         return {
-            "Authorization": f"Basic {encoded_credentials}"
+            "Authorization": f"Bearer {self.api_token}"
         }
     
     def _is_configured(self) -> bool:
         """Check if Zephyr service is properly configured"""
-        return bool(self.base_url and self.access_key and self.secret_key)
+        return bool(self.base_url and self.api_token)
