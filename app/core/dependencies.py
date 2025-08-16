@@ -10,6 +10,8 @@ from app.repositories.interfaces.zephyr_service import IZephyrService
 from app.repositories.implementations.sql_test_case_repository import SQLTestCaseRepository
 from app.repositories.implementations.chroma_memory_service import ChromaMemoryService
 from app.repositories.implementations.openai_service import OpenAIService
+from app.repositories.implementations.gemini_service import GeminiService
+from app.config.settings import settings
 from app.repositories.implementations.jira_service import AtlassianJiraService
 from app.repositories.implementations.zephyr_service import ZephyrScaleService
 
@@ -41,9 +43,12 @@ class Container:
     
     @lru_cache()
     def ai_service(self) -> IAIService:
-        """Get AI service instance (singleton)"""
+        """Get AI service instance (singleton). Prefer OpenAI; fallback to Gemini if OpenAI key not set."""
         if self._ai_service is None:
-            self._ai_service = OpenAIService()
+            if settings.openai_api_key:
+                self._ai_service = OpenAIService()
+            else:
+                self._ai_service = GeminiService()
         return self._ai_service
     
     @lru_cache()

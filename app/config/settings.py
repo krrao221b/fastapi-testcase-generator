@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     openai_model: str = "openai/gpt-4.1"
     openai_embedding_model: str = "text-embedding-3-large"
     
+    # Gemini Configuration (optional)
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-1.5-flash"
+    
     # ChromaDB Configuration
     chroma_persist_directory: str = "./data/chroma_db"
     chroma_collection_name: str = "test_cases"
