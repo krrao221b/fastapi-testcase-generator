@@ -64,7 +64,8 @@ class SQLTestCaseRepository(ITestCaseRepository):
         matching_cases = []
         
         for test_case in db_test_cases:
-            if test_case.tags and any(tag in test_case.tags for tag in tags):
+            case_tags = getattr(test_case, "tags", None) or []
+            if isinstance(case_tags, list) and any(tag in case_tags for tag in tags):
                 matching_cases.append(TestCase.model_validate(test_case))
         
         return matching_cases
