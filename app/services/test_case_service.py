@@ -47,29 +47,58 @@ class TestCaseService:
             logger.info("Starting test case generation", 
                        feature_description=request.feature_description[:100])
 
-            # Strict duplicate check in DB
+            # First, search for similar test cases
+            # Use a combined text (feature + acceptance criteria + tags + priority) to match how embeddings are generated on store
+            combined_query = f"Feature: {request.feature_description}\nAcceptance: {request.acceptance_criteria}"
+            if request.tags:
+                combined_query += f"\nTags: {', '.join(request.tags)}"
+            combined_query += f"\nPriority: {request.priority.value if hasattr(request.priority, 'value') else request.priority}"
+
+            similar_cases = await self.memory_service.search_similar(
+                feature_description=combined_query,
+                limit=5,
+                threshold=0.7
+            )
+
+            # Log similarity scores for debugging (file and method context)
+            try:
+                sim_list = [(sc.test_case.id, round(sc.similarity_score, 4)) for sc in similar_cases]
+            except Exception:
+                sim_list = []
+            logger.info("Similarity search results", file="test_case_service.py", method="generate_test_case", similarities=sim_list)
+            print(f"[debug] test_case_service.py:generate_test_case - similarity scores: {sim_list}")
+
+            # Strict duplicate check in DB (still performed) — but include the similar_cases in the response for visibility
             existing_case = await self.test_case_repository.find_by_feature_and_criteria(
                 request.feature_description.strip(),
                 request.acceptance_criteria.strip()
             )
             if existing_case:
                 logger.info("Exact duplicate found in DB, returning existing test case", test_case_id=existing_case.id)
+                gen_meta = {
+                    "ai_model_used": "existing_duplicate",
+                    "duplicate_detection": True,
+                    "original_test_case_id": existing_case.id
+                }
+                # provide concise similar info
+                gen_meta.update({
+                    "most_similar_test_case_id": existing_case.id,
+                    "most_similar_score": 1.0,
+                    "similar_found": True
+                })
                 return GenerateTestCaseResponse(
                     test_case=existing_case,
-                    similar_cases=[],
-                    generation_metadata={
-                        "ai_model_used": "existing_duplicate",
-                        "duplicate_detection": True,
-                        "original_test_case_id": existing_case.id
-                    }
+                    similar_cases=similar_cases,
+                    generation_metadata=gen_meta
                 )
 
-            # First, search for similar test cases
-            similar_cases = await self.memory_service.search_similar(
-                feature_description=request.feature_description,
-                limit=5,
-                threshold=0.7
-            )
+            # Provide a concise similar-case indicator for frontend (most similar)
+            most_similar = None
+            if similar_cases:
+                most_similar = max(similar_cases, key=lambda s: s.similarity_score)
+            if most_similar:
+                logger.info("Most similar case found", test_case_id=most_similar.test_case.id, score=most_similar.similarity_score)
+
             
             # Check if we have a very similar test case (high similarity threshold)
             duplicate_threshold = 0.95
@@ -90,21 +119,47 @@ class TestCaseService:
             if potential_duplicate:
                 logger.info("Found potential duplicate test case, returning existing one", 
                            existing_test_case_id=potential_duplicate.id)
-                
+                gen_meta = {
+                    "ai_model_used": "existing_duplicate",
+                    "similar_cases_found": len(similar_cases),
+                    "generation_timestamp": potential_duplicate.created_at.isoformat(),
+                    "duplicate_detection": True,
+                    "original_test_case_id": potential_duplicate.id
+                }
+                # include most similar info
+                gen_meta.update({
+                    "most_similar_test_case_id": potential_duplicate.id,
+                    "most_similar_score": 1.0,
+                    "similar_found": True
+                })
                 return GenerateTestCaseResponse(
                     test_case=potential_duplicate,
                     similar_cases=similar_cases,
-                    generation_metadata={
-                        "ai_model_used": "existing_duplicate",
-                        "similar_cases_found": len(similar_cases),
-                        "generation_timestamp": potential_duplicate.created_at.isoformat(),
-                        "duplicate_detection": True,
-                        "original_test_case_id": potential_duplicate.id
-                    }
+                    generation_metadata=gen_meta
                 )
             
             # Generate new test case using AI
             ai_test_case = await self.ai_service.generate_test_case(request)
+
+            # If parsed generation looks incomplete, attempt one retry
+            def _is_incomplete(tc):
+                try:
+                    if not tc:
+                        return True
+                    if not getattr(tc, 'test_steps', None):
+                        return True
+                    if len(getattr(tc, 'test_steps', [])) == 0:
+                        return True
+                    if not getattr(tc, 'expected_result', None):
+                        return True
+                    return False
+                except Exception:
+                    return True
+
+            if _is_incomplete(ai_test_case):
+                logger.warning("AI generated test case looks incomplete, retrying once", file="test_case_service.py", method="generate_test_case")
+                print("[warn] test_case_service.py:generate_test_case - AI result incomplete, retrying generation once")
+                ai_test_case = await self.ai_service.generate_test_case(request)
             
             # Create the test case data dictionary
             test_case_data = ai_test_case.dict(exclude={"id", "created_at", "updated_at"})
@@ -125,6 +180,37 @@ class TestCaseService:
                 test_case_data["jira_issue_key"] = jira_issue_key
                 logger.info("Assigned JIRA issue key to test case", jira_issue_key=jira_issue_key)
                 
+            # Decide whether to persist the generated test case based on similarity
+            # If the caller set force_save=True, always save. Otherwise, skip saving when
+            # a most_similar case exists with score >= settings.skip_store_if_similar_score
+            from app.config.settings import settings
+
+            should_force_save = getattr(request, "force_save", False)
+            skip_store_threshold = float(settings.skip_store_if_similar_score or 0.0)
+
+            if most_similar and not should_force_save and most_similar.similarity_score >= skip_store_threshold:
+                # Do NOT save the generated case; return the generated content to caller but mark it as skipped
+                logger.info("Skipping persistence of generated test case due to similarity to existing case",
+                           most_similar_id=most_similar.test_case.id, score=most_similar.similarity_score)
+
+                gen_meta = {
+                    "ai_model_used": "openai",
+                    "similar_cases_found": len(similar_cases),
+                    "generation_timestamp": ai_test_case.created_at.isoformat(),
+                    "duplicate_detection": True,
+                    "is_new_generation": False,
+                    "store_skipped": True,
+                    "most_similar_test_case_id": most_similar.test_case.id,
+                    "most_similar_score": most_similar.similarity_score
+                }
+
+                # Return the generated test case object (not persisted) so caller can preview or save explicitly
+                return GenerateTestCaseResponse(
+                    test_case=ai_test_case,
+                    similar_cases=similar_cases,
+                    generation_metadata=gen_meta
+                )
+
             # Save the generated test case to database
             test_case_create = TestCaseCreate(**test_case_data)
             saved_test_case = await self.test_case_repository.create(test_case_create)
@@ -135,16 +221,25 @@ class TestCaseService:
             logger.info("Test case generated and saved successfully", 
                        test_case_id=saved_test_case.id)
             
+            # Add concise similar info to generation metadata so frontend can easily check
+            gen_meta = {
+                "ai_model_used": "openai",
+                "similar_cases_found": len(similar_cases),
+                "generation_timestamp": saved_test_case.created_at.isoformat(),
+                "duplicate_detection": False,
+                "is_new_generation": True
+            }
+            if most_similar:
+                gen_meta.update({
+                    "most_similar_test_case_id": most_similar.test_case.id,
+                    "most_similar_score": most_similar.similarity_score,
+                    "similar_found": most_similar.similarity_score >= 0.8
+                })
+
             return GenerateTestCaseResponse(
                 test_case=saved_test_case,
                 similar_cases=similar_cases,
-                generation_metadata={
-                    "ai_model_used": "openai",
-                    "similar_cases_found": len(similar_cases),
-                    "generation_timestamp": saved_test_case.created_at.isoformat(),
-                    "duplicate_detection": False,
-                    "is_new_generation": True
-                }
+                generation_metadata=gen_meta
             )
             
         except Exception as e:

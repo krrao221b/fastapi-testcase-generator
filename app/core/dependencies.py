@@ -32,12 +32,12 @@ class Container:
         """Get test case repository instance"""
         return SQLTestCaseRepository(db)
     
-    @lru_cache()
-    def memory_service(self) -> IMemoryService:
-        """Get memory service instance (singleton)"""
-        if self._memory_service is None:
-            self._memory_service = ChromaMemoryService()
-        return self._memory_service
+    def memory_service(self, db: Session) -> IMemoryService:
+        """Get memory service instance using the provided DB session.
+        Note: memory service depends on a request-scoped DB session, so we
+        create a new instance per call rather than caching a global singleton.
+        """
+        return ChromaMemoryService(db)
     
     @lru_cache()
     def ai_service(self) -> IAIService:
@@ -64,7 +64,7 @@ class Container:
         """Get test case service instance"""
         return TestCaseService(
             test_case_repository=self.test_case_repository(db),
-            memory_service=self.memory_service(),
+            memory_service=self.memory_service(db),
             ai_service=self.ai_service(),
             jira_service=self.jira_service(),
             zephyr_service=self.zephyr_service()
@@ -81,9 +81,9 @@ def get_test_case_repository(db: Session = Depends(get_database)) -> ITestCaseRe
     return container.test_case_repository(db)
 
 
-def get_memory_service() -> IMemoryService:
-    """FastAPI dependency for memory service"""
-    return container.memory_service()
+def get_memory_service(db: Session = Depends(get_database)) -> IMemoryService:
+    """FastAPI dependency for memory service using a DB session"""
+    return container.memory_service(db)
 
 
 def get_ai_service() -> IAIService:

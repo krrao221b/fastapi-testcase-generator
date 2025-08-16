@@ -72,6 +72,8 @@ class GenerateTestCaseRequest(BaseModel):
     priority: TestCasePriority = Field(default=TestCasePriority.MEDIUM)
     tags: List[str] = Field(default_factory=list)
     jira_issue_key: Optional[str] = Field(None, description="JIRA issue key to associate with the test case")
+    # If True, force saving the generated test case even if a similar one exists
+    force_save: bool = Field(default=False, description="Force saving generated test case despite similarity checks")
 
 
 class SearchSimilarRequest(BaseModel):

@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -31,15 +31,20 @@ def event_loop():
     loop.close()
 
 @pytest.fixture(scope="session")
-async def client():
-    """Create test client"""
+def client(event_loop):
+    """Create test client using the session event loop so async tests can await it."""
     # Create tables
     Base.metadata.create_all(bind=engine)
-    
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        yield ac
-    
-    # Clean up
+
+    transport = ASGITransport(app=app)
+    ac = AsyncClient(transport=transport, base_url="http://test")
+    # Enter AsyncClient context on the provided event loop
+    event_loop.run_until_complete(ac.__aenter__())
+
+    yield ac
+
+    # Teardown
+    event_loop.run_until_complete(ac.__aexit__(None, None, None))
     Base.metadata.drop_all(bind=engine)
 
 @pytest.fixture

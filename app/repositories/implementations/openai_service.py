@@ -4,6 +4,7 @@ from typing import List
 from datetime import datetime
 from openai import OpenAI
 import structlog
+import traceback
 from app.repositories.interfaces.ai_service import IAIService
 from app.models.schemas import GenerateTestCaseRequest, TestCase, TestStep, TestCaseStatus
 from app.config.settings import settings
@@ -24,7 +25,25 @@ class OpenAIService(IAIService):
         """Generate a test case using Copilot Models API (async wrapper)"""
         def sync_call():
             try:
+                # Visible debug: show client config (mask API key)
+                try:
+                    api_key = getattr(self.client, 'api_key', None)
+                    if api_key:
+                        masked = api_key[:4] + '...' + api_key[-4:]
+                    else:
+                        masked = None
+                except Exception:
+                    masked = None
+                print("[debug] OpenAI client base:", getattr(self.client, 'base_url', settings.openai_base_url))
+                print("[debug] OpenAI client api_key (masked):", masked)
+                logger.info("OpenAI client info", base=getattr(self.client, 'base_url', settings.openai_base_url), api_key_masked=masked, model=self.model)
+
                 prompt = self._build_test_case_prompt(request)
+                # Print a short preview of prompt to stdout (first 400 chars)
+                print("[debug] Prompt preview:", prompt[:400].replace('\n', ' '))
+                logger.info("Prompt built", prompt_preview=prompt[:200])
+
+                print("[debug] Calling OpenAI chat.completions.create()")
                 response = self.client.chat.completions.create(
                     messages=[
                         {"role": "system", "content": self._get_system_prompt()},
@@ -34,11 +53,33 @@ class OpenAIService(IAIService):
                     top_p=0.9,
                     model=self.model
                 )
-                generated_content = response.choices[0].message.content or ""
-                parsed = self._parse_generated_test_case(generated_content, request)
+
+                print("[debug] OpenAI call returned")
+                logger.info("OpenAI response received", response_repr=str(response)[:1000])
+
+                # Safely extract generated content
+                generated_content = ""
+                try:
+                    if hasattr(response, 'choices') and response.choices:
+                        choice = response.choices[0]
+                        # support different response shapes
+                        if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
+                            generated_content = choice.message.content
+                        else:
+                            generated_content = getattr(choice, 'text', "") or ""
+                except Exception as e:
+                    print("[debug] Failed to extract generated content:", e)
+
+                print("[debug] Generated content (preview):", (generated_content or "")[:400].replace('\n', ' '))
+                parsed = self._parse_generated_test_case(generated_content or "", request)
+                logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
                 return TestCase(**parsed)
             except Exception as e:
-                logger.error("Failed to generate test case", error=str(e))
+                # Print and log full traceback and error details
+                print("[error] Exception in generate_test_case:", type(e).__name__, str(e))
+                traceback_str = traceback.format_exc()
+                print(traceback_str)
+                logger.error("Failed to generate test case", error=str(e), traceback=traceback_str)
                 return self._create_fallback_test_case(request)
         return await asyncio.get_event_loop().run_in_executor(None, sync_call)
 
@@ -82,30 +123,28 @@ class OpenAIService(IAIService):
     
     def _get_system_prompt(self) -> str:
         """Get system prompt for test case generation"""
-        return """You are an expert test case generator. Generate comprehensive, well-structured test cases based on feature descriptions and acceptance criteria.
-
-Your response should be in JSON format with the following structure:
-{
-  "title": "Clear, concise test case title",
-  "description": "Detailed description of what this test case validates",
-  "test_steps": [
-    {
-      "step_number": 1,
-      "action": "Action to perform",
-      "expected_result": "Expected outcome",
-      "test_data": "Any test data needed (optional)"
-    }
-  ],
-  "expected_result": "Overall expected result of the test case",
-  "preconditions": "Any setup or preconditions needed"
-}
-
-Ensure test cases are:
-- Clear and unambiguous
-- Include specific test steps
-- Cover edge cases when relevant
-- Follow testing best practices
-- Include appropriate test data"""
+        return (
+            "You are an expert test case generator. Generate comprehensive, well-structured test cases based on the provided feature description and acceptance criteria.\n\n"
+            "IMPORTANT: Reply with a single, valid JSON object ONLY (no surrounding markdown, explanation text, or backticks). "
+            "The JSON must exactly follow the schema below and include all required fields. If a value is not available, "
+            "provide a reasonable default (empty string, empty list, or N/A) rather than omitting the field.\n\n"
+            "Required JSON structure:\n"
+            "{\n"
+            "  \"title\": string,\n"
+            "  \"description\": string,\n"
+            "  \"test_steps\": [\n"
+            "    {\"step_number\": int, \"action\": string, \"expected_result\": string, \"test_data\": string}\n"
+            "  ],\n"
+            "  \"expected_result\": string,\n"
+            "  \"preconditions\": string\n"
+            "}\n\n"
+            "Additional notes:\n"
+            "- Make sure \"test_steps\" is an array with at least one step.\n"
+            "- \"step_number\" should start at 1 and increment.\n"
+            "- Keep text concise but complete. Use clear actions and expected results.\n"
+            "- Do NOT include any commentary or explanation outside the JSON object.\n\n"
+            "If you cannot produce a valid JSON object, return the empty JSON object: {}"
+        )
     
     def _get_improvement_system_prompt(self) -> str:
         """Get system prompt for test case improvement"""
@@ -170,8 +209,40 @@ Please provide an improved version addressing the feedback while maintaining the
             if json_match:
                 parsed_data = json.loads(json_match.group())
             else:
-                # Fallback to manual parsing if JSON extraction fails
-                parsed_data = self._manual_parse_test_case(generated_content)
+                # Fallback: ask the model to extract/return ONLY the JSON object from its previous output
+                parsed_data = None
+                try:
+                    extraction_prompt = (
+                        "The assistant output below may contain a JSON object.\n"
+                        "Please extract and return ONLY the JSON object. If no JSON can be found, return {}.\n\n" + generated_content
+                    )
+                    extraction_response = self.client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": "You are a JSON extractor. Respond ONLY with the JSON object found in the user content."},
+                            {"role": "user", "content": extraction_prompt}
+                        ],
+                        temperature=0.0,
+                        top_p=1.0,
+                        model=self.model
+                    )
+
+                    extracted_text = ""
+                    if hasattr(extraction_response, 'choices') and extraction_response.choices:
+                        ch = extraction_response.choices[0]
+                        if hasattr(ch, 'message') and getattr(ch.message, 'content', None):
+                            extracted_text = ch.message.content
+                        else:
+                            extracted_text = getattr(ch, 'text', '') or ''
+
+                    json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
+                    if json_match:
+                        parsed_data = json.loads(json_match.group())
+                except Exception as ex:
+                    logger.warning("Fallback JSON extraction failed", error=str(ex))
+
+                if parsed_data is None:
+                    # Final fallback to manual parsing
+                    parsed_data = self._manual_parse_test_case(generated_content)
             
             # Convert test_steps to TestStep objects
             test_steps = []
