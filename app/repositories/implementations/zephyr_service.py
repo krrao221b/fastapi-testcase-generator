@@ -12,8 +12,8 @@ class ZephyrScaleService(IZephyrService):
     """Zephyr Scale (formerly Zephyr for JIRA) implementation"""
     
     def __init__(self):
-        self.base_url = "https://eu.api.zephyrscale.smartbear.com/v2"
-        self.api_token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJjb250ZXh0Ijp7ImJhc2VVcmwiOiJodHRwczovL3Rlc3RjYXNlcmVhZHkuYXRsYXNzaWFuLm5ldCIsInVzZXIiOnsiYWNjb3VudElkIjoiNzEyMDIwOmFjMmQyZTA1LTBhOTYtNGNmYi1hMzQzLWZiZjM3MzBkMTVhYyIsInRva2VuSWQiOiJhN2QzNDdjNS0wZTgzLTQyMzgtOTAwNC1iYzk1OWE2OGMzYjMifX0sImlzcyI6ImNvbS5rYW5vYWgudGVzdC1tYW5hZ2VyIiwic3ViIjoiMTMxYmUzMjMtMGZmZC0zMzk1LTk5MGUtNjU0NDkxMTNhMTgzIiwiZXhwIjoxNzg2NjUwMzk0LCJpYXQiOjE3NTUxMTQzOTR9.-D_zJgOMtdspe5x7gL2j8Xsk-STZNVoeFNtFS3dRGUE"
+        self.base_url = settings.zephyr_base_url
+        self.api_token = settings.zephyr_api_token
     
     async def create_test_case(self, test_case: TestCase, project_key: str) -> Optional[str]:
         """Create a test case in Zephyr and return the test ID"""
