@@ -138,6 +138,38 @@ class TestCaseService:
                     generation_metadata=gen_meta
                 )
             
+            # Decide whether to persist the generated test case based on similarity
+            # If the caller set force_save=True, always save. Otherwise, skip saving when
+            # a most_similar case exists with score >= settings.skip_store_if_similar_score
+            from app.config.settings import settings
+
+            should_force_save = getattr(request, "force_save", False)
+            skip_store_threshold = float(settings.skip_store_if_similar_score or 0.0)
+
+            # If a highly-similar case exists and caller did not force save, skip calling the AI
+            # and return the existing similar case immediately. This avoids unnecessary LLM calls
+            # when we already have a candidate to return to the frontend.
+            if most_similar and not should_force_save and most_similar.similarity_score >= skip_store_threshold:
+                logger.info("Skipping AI generation due to similar existing test case",
+                           most_similar_id=most_similar.test_case.id, score=most_similar.similarity_score)
+
+                gen_meta = {
+                    "ai_model_used": "skipped_due_to_similarity",
+                    "similar_cases_found": len(similar_cases),
+                    "generation_timestamp": most_similar.test_case.created_at.isoformat() if getattr(most_similar.test_case, 'created_at', None) else None,
+                    "duplicate_detection": True,
+                    "is_new_generation": False,
+                    "store_skipped": True,
+                    "most_similar_test_case_id": most_similar.test_case.id,
+                    "most_similar_score": most_similar.similarity_score
+                }
+
+                return GenerateTestCaseResponse(
+                    test_case=most_similar.test_case,
+                    similar_cases=similar_cases,
+                    generation_metadata=gen_meta
+                )
+
             # Generate new test case using AI
             ai_test_case = await self.ai_service.generate_test_case(request)
 
