@@ -12,8 +12,8 @@ class IMemoryService(ABC):
         pass
     
     @abstractmethod
-    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7) -> List[SimilarTestCase]:
-        """Search for similar test cases based on feature description"""
+    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7, tags: List[str] = None, priority: str = None) -> List[SimilarTestCase]:
+        """Search for similar test cases using a text query (acceptance criteria or feature description)"""
         pass
     
     @abstractmethod
@@ -24,4 +24,9 @@ class IMemoryService(ABC):
     @abstractmethod
     async def delete_test_case_embedding(self, test_case_id: int) -> bool:
         """Delete the embedding for a test case"""
+        pass
+
+    @abstractmethod
+    async def health_check(self) -> dict:
+        """Return a simple health check for the memory service (sqlite and vector DB status)"""
         pass

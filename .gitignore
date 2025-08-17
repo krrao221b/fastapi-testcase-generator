@@ -52,3 +52,7 @@ coverage.xml
 *.bak
 *.swp
 *.tmp
+
+#Response files for testing
+response*.json
+send_payload*.py
