@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     # ChromaDB Configuration
     chroma_persist_directory: str = "./data/chroma_db"
     chroma_collection_name: str = "test_cases"
+    # Local embedding fallback
+    use_local_embeddings: bool = False
+    local_embedding_model: str = "all-MiniLM-L6-v2"
+    # Similarity-based storage control
+    # If a most-similar case has a similarity score >= this value, do not store the newly generated test case.
+    # Lowered to 0.75 to allow fewer duplicates to be treated as duplicates (more permissive saving).
+    # NOTE: similarity is cosine in [0,1]; user requested 7.5 — interpreting as 0.75.
+    skip_store_if_similar_score: float = 0.75
     
     # JIRA Integration
     jira_base_url: Optional[str] = "https://testcaseready.atlassian.net"
