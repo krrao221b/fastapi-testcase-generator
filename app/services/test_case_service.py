@@ -428,19 +428,28 @@ class TestCaseService:
                 test_case_data["jira_issue_key"] = jira_issue_key
                 logger.info("Assigned JIRA issue key to test case", jira_issue_key=jira_issue_key)
 
-            logger.info("Generating new test case", feature_description=request.feature_description[:100])
+            # Persist the newly generated test case
+            logger.info("Saving newly generated test case", feature_description=request.feature_description[:100])
+            test_case_create = TestCaseCreate(**test_case_data)
+            saved_test_case = await self.test_case_repository.create(test_case_create)
+
+            # Store in vector database for future similarity searches
+            try:
+                await self.memory_service.store_test_case(saved_test_case)
+            except Exception as mem_exc:
+                logger.warning("Failed to store test case embedding (generate_new)", error=str(mem_exc))
 
             gen_meta = {
                 "ai_model_used": "openai",
-                "generation_timestamp": ai_test_case.created_at.isoformat(),
-                "duplicate_detection": True,
-                "is_new_generation": False,
-                "store_skipped": True,
+                "generation_timestamp": saved_test_case.created_at.isoformat(),
+                "duplicate_detection": False,
+                "is_new_generation": True,
+                "store_skipped": False,
             }
             return GenerateNewTestCaseResponse(
-                test_case = ai_test_case,
+                test_case=saved_test_case,
                 generation_metadata=gen_meta,
-                message=f"Generated new test case with ID {ai_test_case.id}",
+                message=f"Generated and saved new test case with ID {saved_test_case.id}",
             )
         except Exception as e:
             logger.error("Failed to generate new test case", error=str(e))

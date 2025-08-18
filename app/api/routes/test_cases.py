@@ -35,7 +35,7 @@ async def generate_test_case(
             detail="Failed to generate test case"
         )
 
-@router.post("/generate-new", response_model=GenerateTestCaseResponse)
+@router.post("/generate-new", response_model=GenerateNewTestCaseResponse)
 async def generate_new_test_case(
     request: GenerateNewTestCaseRequest,
     service: TestCaseService = Depends(get_test_case_service)
