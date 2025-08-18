@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Gemini Configuration (optional)
     gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-1.5-flash"
+    # Embedding fallback policy (to avoid mixing vector spaces)
+    # Keep False unless you separate collections per provider
+    allow_gemini_embedding_fallback: bool = False
     
     # ChromaDB Configuration
     chroma_persist_directory: str = "./data/chroma_db"
