@@ -17,13 +17,16 @@ router = APIRouter(prefix="/integrations", tags=["integrations"])
 @router.get("/jira/{ticket_key}")
 async def get_jira_ticket(
     ticket_key: str,
+    include_similar: bool = True,
+    limit: int = 5,
+    threshold: float = 0.7,
     service: TestCaseService = Depends(get_test_case_service)
 ):
     """Fetch JIRA ticket details by ticket key (e.g., PROJ-123)"""
     try:
         logger.info("Fetching JIRA ticket", ticket_key=ticket_key)
         # Replace with actual service call to fetch ticket details
-        ticket_data = await service.get_jira_ticket(ticket_key)
+        ticket_data = await service.get_jira_ticket(ticket_key, include_similar=include_similar, limit=limit, threshold=threshold)
         if not ticket_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

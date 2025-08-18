@@ -32,8 +32,10 @@ class TestCaseService:
         self.jira_service = jira_service
         self.zephyr_service = zephyr_service
         
-    async def get_jira_ticket(self, ticket_key: str) -> Optional[dict]:
-        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123)"""
+    async def get_jira_ticket(self, ticket_key: str, include_similar: bool = True, limit: int = 5, threshold: float = 0.7) -> Optional[dict]:
+        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123).
+        Optionally include similar test cases (default: True).
+        """
         try:
             logger.info("Fetching JIRA ticket from JiraService", ticket_key=ticket_key)
             ticket_data = await self.jira_service.get_issue(ticket_key)
@@ -63,11 +65,14 @@ class TestCaseService:
                     combined_query += f"\nTags: {tags}"
             combined_query += f"\nPriority: {priority_val}"
 
-            similar_cases = await self.memory_service.search_similar(
-                feature_description=combined_query,
-                limit=5,
-                threshold=0.7
-            )
+            # Allow caller to skip similarity search for faster initial response
+            similar_cases = []
+            if include_similar:
+                similar_cases = await self.memory_service.search_similar(
+                    feature_description=combined_query,
+                    limit=limit,
+                    threshold=threshold
+                )
 
             # Convert SimilarTestCase objects to JSON-serializable dicts
             serializable_similar = []
