@@ -24,7 +24,7 @@ openai_client = OpenAI(
 )
 
 # Define embedding model
-embedding_model = "openai/text-embedding-3-small"
+embedding_model = settings.openai_embedding_model
 
 
 class ChromaMemoryService(IMemoryService):
@@ -61,10 +61,60 @@ class ChromaMemoryService(IMemoryService):
                 )
             else:
                 self.embedding_function = None
+            # Create or get collection. After creation, verify embedding dimension matches current model
             self.collection = self.client.get_or_create_collection(
                 name=settings.chroma_collection_name,
                 embedding_function=self.embedding_function
             )
+
+            # Determine expected embedding dimension from the configured model (or local model)
+            try:
+                self.embedding_dim = self._determine_embedding_dim()
+                logger.info("Determined embedding dimension", embedding_dim=self.embedding_dim, model=embedding_model)
+            except Exception as ed:
+                self.embedding_dim = None
+                logger.warning("Unable to determine embedding dimension at startup", error=str(ed))
+
+            # If the collection already has stored embeddings, try to detect a mismatch and recreate if necessary
+            try:
+                # collection.get() returns dict with 'metadatas' if any docs exist
+                existing = self.collection.get()
+                metas = existing.get('metadatas') if isinstance(existing, dict) else None
+                # metas is a list-of-lists like [[{...}, ...]] or [] depending on Chroma version
+                flat_meta = []
+                if metas:
+                    # handle both nested and flat
+                    if isinstance(metas[0], list):
+                        for inner in metas:
+                            flat_meta.extend(inner)
+                    else:
+                        flat_meta = metas
+
+                if flat_meta and self.embedding_dim is not None:
+                    # if any metadata includes our stored embedding snapshot, compare length
+                    for md in flat_meta:
+                        emb_json = md.get('embedding') if isinstance(md, dict) else None
+                        if emb_json:
+                            try:
+                                prev_emb = json.loads(emb_json)
+                                if isinstance(prev_emb, list) and len(prev_emb) != self.embedding_dim:
+                                    logger.warning("Stored embeddings dimension mismatch detected; recreating collection", stored_dim=len(prev_emb), expected_dim=self.embedding_dim)
+                                    try:
+                                        self.client.delete_collection(name=settings.chroma_collection_name)
+                                    except Exception as de:
+                                        logger.warning("Failed to delete existing collection during startup check", error=str(de))
+                                    # recreate collection with current embedding function
+                                    self.collection = self.client.get_or_create_collection(
+                                        name=settings.chroma_collection_name,
+                                        embedding_function=self.embedding_function
+                                    )
+                                    break
+                            except Exception:
+                                # skip malformed embedding metadata
+                                continue
+            except Exception as e:
+                # best-effort; don't fail startup if Chroma introspection fails
+                logger.debug("Could not introspect existing collection embeddings at startup", error=str(e))
             self.db = db_session
             logger.debug("ChromaMemoryService initialized successfully")
         except Exception as e:
@@ -101,6 +151,36 @@ class ChromaMemoryService(IMemoryService):
             logger.error("Embedding API error", error=str(e))
             logger.debug(traceback.format_exc())
             return []
+
+    def _determine_embedding_dim(self) -> int:
+        """Determine the embedding vector dimension for the configured embedding model.
+
+        If a local model is in use, infer from its output. Otherwise, request a single embedding
+        (quietly) to determine dimension. This is a best-effort method and should not raise on failure.
+        """
+        # If local model available, use a small sample
+        if self.local_model is not None:
+            try:
+                emb = self.local_model.encode("test")
+                return len(emb)
+            except Exception as e:
+                logger.debug("Failed to infer dim from local model", error=str(e))
+
+        # Otherwise, call the remote embeddings API with a tiny prompt
+        try:
+            resp = openai_client.embeddings.create(model=embedding_model, input=["test"])
+            emb = resp.data[0].embedding
+            return len(emb)
+        except Exception as e:
+            logger.debug("Failed to infer dim from OpenAI embedding API", error=str(e))
+            # As a fallback, map known models to dims (extendable)
+            model_dim_map = {
+                "text-embedding-3-small": 1536,
+                "text-embedding-3-large": 3072,
+                # older OpenAI models - keep for compatibility
+                "text-embedding-ada-002": 1536,
+            }
+            return model_dim_map.get(embedding_model, None)
     
 
     async def store_test_case(self, test_case: TestCase) -> bool:
@@ -225,6 +305,17 @@ class ChromaMemoryService(IMemoryService):
                 try:
                     if db_case.embedding_vector:
                         embedding = np.frombuffer(db_case.embedding_vector, dtype=np.float32)
+                        # If stored embedding length doesn't match the current query embedding length, skip and log
+                        if self.embedding_dim is not None and len(embedding) != len(embedding_query):
+                            logger.warning(
+                                "SQLite embedding dimension mismatch - skipping DB compare",
+                                file="chroma_memory_service.py",
+                                method="search_similar",
+                                test_case_id=db_case.id,
+                                stored_dim=len(embedding),
+                                query_dim=len(embedding_query),
+                            )
+                            continue
                         similarity = self._cosine_similarity(embedding_query, embedding)
                         # Always log per-row similarity for debugging with DB metadata
                         logger.debug(
@@ -339,6 +430,16 @@ class ChromaMemoryService(IMemoryService):
     def _cosine_similarity(self, vec1, vec2):
         vec1 = np.array(vec1, dtype=np.float32)
         vec2 = np.array(vec2, dtype=np.float32)
+        # Defensive: if dims mismatch, log and return similarity 0 rather than raising
+        if vec1.shape != vec2.shape:
+            logger.warning(
+                "Cosine similarity skipped due to shape mismatch",
+                file="chroma_memory_service.py",
+                method="_cosine_similarity",
+                shape_vec1=vec1.shape,
+                shape_vec2=vec2.shape,
+            )
+            return 0.0
         dot_product = np.dot(vec1, vec2)
         norm1 = np.linalg.norm(vec1)
         norm2 = np.linalg.norm(vec2)

@@ -170,8 +170,37 @@ class TestCaseService:
                     generation_metadata=gen_meta
                 )
 
-            # Generate new test case using AI
-            ai_test_case = await self.ai_service.generate_test_case(request)
+            # Generate new test case using AI (defensive: catch provider errors and return a fallback)
+            try:
+                ai_test_case = await self.ai_service.generate_test_case(request)
+            except Exception as ai_exc:
+                logger.error("AI generation failed, using fallback test case", error=str(ai_exc))
+                # Build a minimal fallback TestCase similar to OpenAIService fallback
+                from datetime import datetime
+                from app.models.schemas import TestStep, TestCase as TC, TestCaseStatus
+                ai_test_case = TC(
+                    id=0,
+                    title=f"Test Case for {request.feature_description[:50]}...",
+                    description="AI-generated test case (fallback)",
+                    feature_description=request.feature_description,
+                    acceptance_criteria=request.acceptance_criteria,
+                    priority=request.priority,
+                    status=TestCaseStatus.DRAFT,
+                    tags=request.tags,
+                    preconditions="System is ready for testing",
+                    test_steps=[
+                        TestStep(
+                            step_number=1,
+                            action="Execute the feature as described",
+                            expected_result="Feature works according to acceptance criteria",
+                            test_data=None
+                        )
+                    ],
+                    expected_result="Test passes successfully",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    jira_issue_key=None
+                )
 
             # If parsed generation looks incomplete, attempt one retry
             def _is_incomplete(tc):
