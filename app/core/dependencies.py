@@ -39,7 +39,20 @@ class Container:
         Note: memory service depends on a request-scoped DB session, so we
         create a new instance per call rather than caching a global singleton.
         """
-        return ChromaMemoryService(db)
+        # Create a single ChromaMemoryService instance and reuse it across requests,
+        # but update its DB session for each request. This avoids expensive re-inits
+        # (embedding model probes, Chroma client creation) on every request which
+        # can block the server when multiple requests happen concurrently.
+        if self._memory_service is None:
+            self._memory_service = ChromaMemoryService(db)
+        else:
+            # update the request-scoped DB session on the cached instance
+            try:
+                self._memory_service.db = db
+            except Exception:
+                # fallback: re-create if the instance cannot accept a new db
+                self._memory_service = ChromaMemoryService(db)
+        return self._memory_service
     
     @lru_cache()
     def ai_service(self) -> IAIService:
