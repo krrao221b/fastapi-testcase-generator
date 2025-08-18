@@ -362,139 +362,25 @@ class TestCaseService:
                         feature_description=request.feature_description, error=str(e))
             raise
     
-    async def search_similar_test_cases(self, request: SearchSimilarRequest) -> SimilarTestCase | None:
+    async def search_similar_test_cases(self, request: SearchSimilarRequest) -> List[SimilarTestCase]:
         """Search for similar test cases"""
         try:
-            logger.info("Starting test case generation",
-                        feature_description=request.feature_description[:100])
-
-            # First, search for similar test cases
-            # Use a combined text (feature + acceptance criteria + tags + priority) to match how embeddings are generated on store
-            combined_query = f"Feature: {request.feature_description}\nAcceptance: {request.acceptance_criteria}"
-            if request.tags:
-                combined_query += f"\nTags: {', '.join(request.tags)}"
-            combined_query += f"\nPriority: {request.priority.value if hasattr(request.priority, 'value') else request.priority}"
-
             similar_cases = await self.memory_service.search_similar(
-                feature_description=combined_query,
-                limit=5,
-                threshold=0.7
+                feature_description=request.feature_description,
+                limit=request.limit,
+                threshold=request.similarity_threshold
             )
-
-            # Log similarity scores for debugging (file and method context)
-            try:
-                sim_list = [(sc.test_case.id, round(sc.similarity_score, 4)) for sc in similar_cases]
-            except Exception:
-                sim_list = []
-            logger.info("Similarity search results", file="test_case_service.py", method="generate_test_case",
-                        similarities=sim_list)
-            print(f"[debug] test_case_service.py:generate_test_case - similarity scores: {sim_list}")
-
-            # Strict duplicate check in DB (still performed) — but include the similar_cases in the response for visibility
-            existing_case = await self.test_case_repository.find_by_feature_and_criteria(
-                request.feature_description.strip(),
-                request.acceptance_criteria.strip()
-            )
-            if existing_case:
-                logger.info("Exact duplicate found in DB, returning existing test case", test_case_id=existing_case.id)
-                gen_meta = {
-                    "ai_model_used": "existing_duplicate",
-                    "duplicate_detection": True,
-                    "original_test_case_id": existing_case.id
-                }
-                # provide concise similar info
-                gen_meta.update({
-                    "most_similar_test_case_id": existing_case.id,
-                    "most_similar_score": 1.0,
-                    "similar_found": True
-                })
-                return SimilarTestCase(
-                    test_case=existing_case,
-                    similarity_score=existing_case.similarity_score
-                )
-
-            # Provide a concise similar-case indicator for frontend (most similar)
-            most_similar = None
-            if similar_cases:
-                most_similar = max(similar_cases, key=lambda s: s.similarity_score)
-            if most_similar:
-                logger.info("Most similar case found", test_case_id=most_similar.test_case.id,
-                            score=most_similar.similarity_score)
-
-            # Check if we have a very similar test case (high similarity threshold)
-            duplicate_threshold = 0.95
-            potential_duplicate : SimilarTestCase = None
-
-            if similar_cases:
-                for similar_case in similar_cases:
-                    if similar_case.similarity_score >= duplicate_threshold:
-                        # Check if feature description and acceptance criteria are very similar
-                        if (similar_case.test_case.feature_description.strip().lower() ==
-                                request.feature_description.strip().lower() and
-                                similar_case.test_case.acceptance_criteria.strip().lower() ==
-                                request.acceptance_criteria.strip().lower()):
-                            potential_duplicate.test_case = similar_case.test_case
-                            potential_duplicate.similarity_score = similar_case.similarity_score
-                            break
-
-            # If duplicate found, return it instead of creating new one
-            if potential_duplicate:
-                logger.info("Found potential duplicate test case, returning existing one",
-                            existing_test_case_id=potential_duplicate.id)
-                gen_meta = {
-                    "ai_model_used": "existing_duplicate",
-                    "similar_cases_found": len(similar_cases),
-                    "generation_timestamp": potential_duplicate.created_at.isoformat(),
-                    "duplicate_detection": True,
-                    "original_test_case_id": potential_duplicate.id
-                }
-                # include most similar info
-                gen_meta.update({
-                    "most_similar_test_case_id": potential_duplicate.id,
-                    "most_similar_score": 1.0,
-                    "similar_found": True
-                })
-                return SimilarTestCase(
-                    test_case=potential_duplicate.test_case,
-                    similarity_score=potential_duplicate.similarity_score
-                )
-
-            # Decide whether to persist the generated test case based on similarity
-            # If the caller set force_save=True, always save. Otherwise, skip saving when
-            # a most_similar case exists with score >= settings.skip_store_if_similar_score
-            from app.config.settings import settings
-
-            should_force_save = getattr(request, "force_save", False)
-            skip_store_threshold = float(settings.skip_store_if_similar_score or 0.0)
-
-            # If a highly-similar case exists and caller did not force save, skip calling the AI
-            # and return the existing similar case immediately. This avoids unnecessary LLM calls
-            # when we already have a candidate to return to the frontend.
-            if most_similar and not should_force_save and most_similar.similarity_score >= skip_store_threshold:
-                logger.info("Skipping AI generation due to similar existing test case",
-                            most_similar_id=most_similar.test_case.id, score=most_similar.similarity_score)
-
-                gen_meta = {
-                    "ai_model_used": "skipped_due_to_similarity",
-                    "similar_cases_found": len(similar_cases),
-                    "generation_timestamp": most_similar.test_case.created_at.isoformat() if getattr(
-                        most_similar.test_case, 'created_at', None) else None,
-                    "duplicate_detection": True,
-                    "is_new_generation": False,
-                    "store_skipped": True,
-                    "most_similar_test_case_id": most_similar.test_case.id,
-                    "most_similar_score": most_similar.similarity_score
-                }
-
-                return SimilarTestCase(
-                    test_case=most_similar.test_case,
-                    similarity_score=most_similar.similarity_score
-                )
-
-            return most_similar
+           
+            logger.info("Similar test cases search completed",
+                       feature_description=request.feature_description[:100],
+                       results_count=len(similar_cases))
+           
+            return similar_cases
+           
         except Exception as e:
-            logger.error("Error finding most similar test case: ", exc_info=e)
-            print("Error finding most similar test case: ", e)
+            logger.error("Failed to search similar test cases",
+                        feature_description=request.feature_description, error=str(e))
+            raise
 
     async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> GenerateNewTestCaseResponse:
         """Generate a new test case using AI and memory search"""
@@ -554,7 +440,7 @@ class TestCaseService:
             return GenerateNewTestCaseResponse(
                 test_case = ai_test_case,
                 generation_metadata=gen_meta,
-                message=request.message,
+                message=f"Generated new test case with ID {ai_test_case.id}",
             )
         except Exception as e:
             logger.error("Failed to generate new test case", error=str(e))
