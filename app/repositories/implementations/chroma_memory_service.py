@@ -24,7 +24,7 @@ openai_client = OpenAI(
 )
 
 # Define embedding model
-embedding_model = "openai/text-embedding-3-small"
+embedding_model = settings.openai_embedding_model
 
 
 class ChromaMemoryService(IMemoryService):
@@ -53,18 +53,65 @@ class ChromaMemoryService(IMemoryService):
                     logger.debug(traceback.format_exc())
                     self.local_model = None
 
-            if self.local_model is None:
-                self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
-                    api_key=settings.openai_api_key,
-                    api_base=settings.openai_base_url,
-                    model_name=embedding_model
-                )
-            else:
-                self.embedding_function = None
+            # Do not attach embedding_function to the collection; we'll pass explicit vectors.
+            self.embedding_function = None
+            # Create or get collection. After creation, verify embedding dimension matches current model
             self.collection = self.client.get_or_create_collection(
                 name=settings.chroma_collection_name,
                 embedding_function=self.embedding_function
             )
+
+            # Determine expected embedding dimension from the configured model (or local model)
+            try:
+                self.embedding_dim = self._determine_embedding_dim()
+                logger.info("Determined embedding dimension", embedding_dim=self.embedding_dim, model=embedding_model)
+            except Exception as ed:
+                self.embedding_dim = None
+                logger.warning("Unable to determine embedding dimension at startup", error=str(ed))
+
+            # If the collection already has stored embeddings, try to detect a mismatch and recreate if necessary
+            try:
+                # collection.get() returns dict with 'metadatas' if any docs exist
+                existing = self.collection.get()
+                metas = existing.get('metadatas') if isinstance(existing, dict) else None
+                # metas is a list-of-lists like [[{...}, ...]] or [] depending on Chroma version
+                flat_meta = []
+                if metas:
+                    # handle both nested and flat
+                    if isinstance(metas[0], list):
+                        for inner in metas:
+                            flat_meta.extend(inner)
+                    else:
+                        flat_meta = metas
+
+                if flat_meta and self.embedding_dim is not None:
+                    # if any metadata includes our stored embedding snapshot, compare length
+                    for md in flat_meta:
+                        emb_json = md.get('embedding') if isinstance(md, dict) else None
+                        if emb_json:
+                            try:
+                                if isinstance(emb_json, str):
+                                    prev_emb = json.loads(emb_json)
+                                else:
+                                    prev_emb = None
+                                if isinstance(prev_emb, list) and len(prev_emb) != self.embedding_dim:
+                                    logger.warning("Stored embeddings dimension mismatch detected; recreating collection", stored_dim=len(prev_emb), expected_dim=self.embedding_dim)
+                                    try:
+                                        self.client.delete_collection(name=settings.chroma_collection_name)
+                                    except Exception as de:
+                                        logger.warning("Failed to delete existing collection during startup check", error=str(de))
+                                    # recreate collection with current embedding function
+                                    self.collection = self.client.get_or_create_collection(
+                                        name=settings.chroma_collection_name,
+                                        embedding_function=None
+                                    )
+                                    break
+                            except Exception:
+                                # skip malformed embedding metadata
+                                continue
+            except Exception as e:
+                # best-effort; don't fail startup if Chroma introspection fails
+                logger.debug("Could not introspect existing collection embeddings at startup", error=str(e))
             self.db = db_session
             logger.debug("ChromaMemoryService initialized successfully")
         except Exception as e:
@@ -101,20 +148,55 @@ class ChromaMemoryService(IMemoryService):
             logger.error("Embedding API error", error=str(e))
             logger.debug(traceback.format_exc())
             return []
+
+    def _determine_embedding_dim(self) -> int | None:
+        """Determine the embedding vector dimension for the configured embedding model.
+
+        If a local model is in use, infer from its output. Otherwise, request a single embedding
+        (quietly) to determine dimension. This is a best-effort method and should not raise on failure.
+        """
+        # If local model available, use a small sample
+        if self.local_model is not None:
+            try:
+                emb = self.local_model.encode("test")
+                return len(emb)
+            except Exception as e:
+                logger.debug("Failed to infer dim from local model", error=str(e))
+
+        # Otherwise, call the remote embeddings API with a tiny prompt
+        try:
+            resp = openai_client.embeddings.create(model=embedding_model, input=["test"])
+            emb = resp.data[0].embedding
+            return len(emb)
+        except Exception as e:
+            logger.debug("Failed to infer dim from OpenAI embedding API", error=str(e))
+            # As a fallback, map known models to dims (extendable)
+            model_dim_map = {
+                "text-embedding-3-small": 1536,
+                "text-embedding-3-large": 3072,
+                # older OpenAI models - keep for compatibility
+                "text-embedding-ada-002": 1536,
+            }
+            return model_dim_map.get(embedding_model, None)
     
 
     async def store_test_case(self, test_case: TestCase) -> bool:
-        """Store a test case in ChromaDB and SQLite with embedding"""
+        """Store a test case in ChromaDB and SQLite with embedding.
+        On embedding failure (e.g., 429), skip vector adds but do not fail the overall operation.
+        """
         try:
             combined_text = f"Title: {test_case.title}\nDescription: {test_case.description}\nFeature: {test_case.feature_description}\nAcceptance: {test_case.acceptance_criteria}\nTags: {','.join(test_case.tags)}\nPriority: {test_case.priority.value}"
             embedding = self._get_embedding(combined_text)
             if not embedding:
-                raise Exception("Embedding generation failed")
+                logger.warning("Embedding generation failed; skipping Chroma/SQLite vector storage", test_case_id=test_case.id)
+                # Do not raise; allow the rest of the flow to succeed without vectors
+                return True
 
             # Store in ChromaDB: add full document (title+description+feature+acceptance+tags+priority)
             try:
                 self.collection.add(
                     documents=[combined_text],
+                    embeddings=[embedding],
                     metadatas=[{
                         "test_case_id": test_case.id,
                         "title": test_case.title,
@@ -135,6 +217,7 @@ class ChromaMemoryService(IMemoryService):
                     try:
                         self.collection.add(
                             documents=[short_text],
+                            embeddings=[short_embedding],
                             metadatas=[{
                                 "test_case_id": test_case.id,
                                 "title": test_case.title,
@@ -162,24 +245,26 @@ class ChromaMemoryService(IMemoryService):
                         self.client.delete_collection(name=settings.chroma_collection_name)
                     except Exception as de:
                         logger.warning("Failed to delete existing collection", error=str(de))
-                    # Recreate collection with current embedding function
+                    # Recreate collection without embedding function (we pass explicit vectors)
                     try:
                         self.collection = self.client.get_or_create_collection(
                             name=settings.chroma_collection_name,
-                            embedding_function=self.embedding_function
+                            embedding_function=None
                         )
-                        # Retry add once
+                        # Retry add once with explicit embeddings
                         self.collection.add(
                             documents=[combined_text],
+                            embeddings=[embedding],
                             metadatas=[{
                                 "test_case_id": test_case.id,
                                 "title": test_case.title,
                                 "priority": test_case.priority.value,
                                 "tags": ",".join(test_case.tags),
                                 "created_at": test_case.created_at.isoformat(),
-                                "embedding": json.dumps(embedding)
+                                "embedding": json.dumps(embedding),
+                                "type": "full"
                             }],
-                            ids=[f"test_case_{test_case.id}"]
+                            ids=[f"test_case_{test_case.id}_full"]
                         )
                     except Exception as retry_e:
                         logger.error("Retry add after recreating collection failed", error=str(retry_e))
@@ -192,7 +277,8 @@ class ChromaMemoryService(IMemoryService):
             db_case = self.db.query(TestCaseModel).filter(TestCaseModel.id == test_case.id).first()
             if db_case:
                 try:
-                    db_case.embedding_vector = np.array(embedding, dtype=np.float32).tobytes()
+                    vec_bytes = np.array(embedding, dtype=np.float32).tobytes()
+                    setattr(db_case, 'embedding_vector', vec_bytes)
                     self.db.commit()
                     logger.debug("Stored embedding in SQLite", test_case_id=test_case.id)
                 except Exception as db_e:
@@ -207,7 +293,7 @@ class ChromaMemoryService(IMemoryService):
             return False
     
 
-    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7, tags: List[str] = None, priority: str = None) -> List[SimilarTestCase]:
+    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7, tags: list[str] | None = None, priority: str | None = None) -> List[SimilarTestCase]:
         """Search for similar test cases using all fields and fetch full details from SQLite and ChromaDB"""
         try:
             logger.debug("search_similar called", feature_description_preview=(feature_description or "")[:200].replace('\n', ' '))
@@ -215,16 +301,28 @@ class ChromaMemoryService(IMemoryService):
 
             embedding_query = self._get_embedding(feature_description)
             if not embedding_query:
-                logger.warning("Query embedding failed or empty")
-                raise Exception("Query embedding failed")
+                logger.warning("Query embedding failed or empty; returning no results")
+                return []
 
             # Search in SQLite (local vector compare)
             db_cases = self.db.query(TestCaseModel).all()
             sqlite_results = []
             for db_case in db_cases:
                 try:
-                    if db_case.embedding_vector:
-                        embedding = np.frombuffer(db_case.embedding_vector, dtype=np.float32)
+                    bdata = getattr(db_case, 'embedding_vector', None)
+                    if isinstance(bdata, (bytes, bytearray)) and len(bdata) > 0:
+                        embedding = np.frombuffer(bdata, dtype=np.float32)
+                        # If stored embedding length doesn't match the current query embedding length, skip and log
+                        if self.embedding_dim is not None and len(embedding) != len(embedding_query):
+                            logger.warning(
+                                "SQLite embedding dimension mismatch - skipping DB compare",
+                                file="chroma_memory_service.py",
+                                method="search_similar",
+                                test_case_id=db_case.id,
+                                stored_dim=len(embedding),
+                                query_dim=len(embedding_query),
+                            )
+                            continue
                         similarity = self._cosine_similarity(embedding_query, embedding)
                         # Always log per-row similarity for debugging with DB metadata
                         logger.debug(
@@ -256,8 +354,9 @@ class ChromaMemoryService(IMemoryService):
             sqlite_results = sqlite_results[:limit]
 
             # Search in ChromaDB
+            # Avoid using embedding_function to prevent provider rate-limits inside Chroma; pass explicit vector
             chroma_results = self.collection.query(
-                query_texts=[feature_description],
+                query_embeddings=[embedding_query],
                 n_results=limit
             )
             chroma_similar_cases = []
@@ -286,7 +385,13 @@ class ChromaMemoryService(IMemoryService):
                             threshold=threshold,
                         )
                         if similarity_score >= threshold:
-                            db_id = int(metadata.get("test_case_id"))
+                            tcid_val = metadata.get("test_case_id") if isinstance(metadata, dict) else None
+                            try:
+                                db_id = int(tcid_val) if tcid_val is not None else None
+                            except Exception:
+                                db_id = None
+                            if db_id is None:
+                                continue
                             db_case = self.db.query(TestCaseModel).filter(TestCaseModel.id == db_id).first()
                             if db_case:
                                 test_case = TestCase.model_validate(db_case)
@@ -339,6 +444,16 @@ class ChromaMemoryService(IMemoryService):
     def _cosine_similarity(self, vec1, vec2):
         vec1 = np.array(vec1, dtype=np.float32)
         vec2 = np.array(vec2, dtype=np.float32)
+        # Defensive: if dims mismatch, log and return similarity 0 rather than raising
+        if vec1.shape != vec2.shape:
+            logger.warning(
+                "Cosine similarity skipped due to shape mismatch",
+                file="chroma_memory_service.py",
+                method="_cosine_similarity",
+                shape_vec1=vec1.shape,
+                shape_vec2=vec2.shape,
+            )
+            return 0.0
         dot_product = np.dot(vec1, vec2)
         norm1 = np.linalg.norm(vec1)
         norm2 = np.linalg.norm(vec2)
@@ -358,7 +473,8 @@ class ChromaMemoryService(IMemoryService):
 
         try:
             # Quick sqlite query
-            _ = self.db.execute("SELECT 1").fetchone()
+            from sqlalchemy import text
+            _ = self.db.execute(text("SELECT 1")).fetchone()
             result["sqlite"] = True
         except Exception as e:
             print(f"[warn] SQLite health check failed: {e}")
@@ -379,10 +495,11 @@ class ChromaMemoryService(IMemoryService):
     async def delete_test_case_embedding(self, test_case_id: int) -> bool:
         """Delete the embedding for a test case in both DBs"""
         try:
-            self.collection.delete(ids=[f"test_case_{test_case_id}"])
+            # Remove any variants we add
+            self.collection.delete(ids=[f"test_case_{test_case_id}_full", f"test_case_{test_case_id}_short"])
             db_case = self.db.query(TestCaseModel).filter(TestCaseModel.id == test_case_id).first()
             if db_case:
-                db_case.embedding_vector = None
+                setattr(db_case, 'embedding_vector', None)
                 self.db.commit()
             logger.info("Test case embedding deleted", test_case_id=test_case_id)
             return True

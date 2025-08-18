@@ -148,9 +148,12 @@ class OpenAIService(IAIService):
         except (RateLimitError, APIStatusError) as e:
             status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
             if status == 429 or isinstance(e, RateLimitError):
-                logger.warning("OpenAI 429 (embedding): falling back to Gemini")
-                from app.repositories.implementations.gemini_service import GeminiService
-                return await GeminiService().generate_embedding(text)
+                if getattr(settings, "allow_gemini_embedding_fallback", False):
+                    logger.warning("OpenAI 429 (embedding): falling back to Gemini")
+                    from app.repositories.implementations.gemini_service import GeminiService
+                    return await GeminiService().generate_embedding(text)
+                logger.warning("OpenAI 429 (embedding): skipping fallback to avoid mixed vector spaces; returning []")
+                return []
             logger.error("OpenAI API error (non-429) embedding", error=str(e))
             return []
         except Exception as e:
@@ -294,14 +297,15 @@ Please provide an improved version addressing the feedback while maintaining the
                         model=self.model
                     )
 
-                    extracted_text = ""
+                    extracted_text: str = ""
                     if hasattr(extraction_response, 'choices') and extraction_response.choices:
                         ch = extraction_response.choices[0]
                         if hasattr(ch, 'message') and getattr(ch.message, 'content', None):
-                            extracted_text = ch.message.content
+                            extracted_text = ch.message.content or ""
                         else:
                             extracted_text = getattr(ch, 'text', '') or ''
 
+                    extracted_text = extracted_text or ""
                     json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
                     if json_match:
                         parsed_data = json.loads(json_match.group())

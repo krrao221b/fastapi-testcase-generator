@@ -1,4 +1,6 @@
 import json
+import asyncio
+import re
 from datetime import datetime
 from typing import List, Optional
 
@@ -33,16 +35,25 @@ class GeminiService(IAIService):
                 logger.error("Gemini model not configured; using basic fallback")
                 return self._create_fallback_test_case(request)
 
-            prompt = self._build_generation_prompt(request)
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=500,
-                    temperature=0.3,
-                    top_p=0.9,
-                ),
-            )
-            text = getattr(response, "text", None) or ""
+            def sync_call():
+                # Type guard for static analyzers
+                model = self.model
+                assert model is not None
+                prompt = self._build_generation_prompt(request)
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        max_output_tokens=500,
+                        temperature=0.3,
+                        top_p=0.9,
+                        # Ask the model to return raw JSON, no prose
+                        response_mime_type="application/json",
+                    ),
+                )
+                text = getattr(response, "text", None) or ""
+                return text
+
+            text = await asyncio.get_event_loop().run_in_executor(None, sync_call)
             if not text:
                 return self._create_fallback_test_case(request)
             data = self._parse_generated_test_case(text, request)
@@ -55,13 +66,14 @@ class GeminiService(IAIService):
         try:
             if not settings.gemini_api_key:
                 return []
-            
-            truncated_text = text
-            if len(text) > 500:
-                truncated_text = text[:500]
-            response = genai.embed_content(model=self.embedding_model, content=truncated_text)
-            return getattr(response, "embedding", [])
-        
+
+            truncated_text = text[:500] if len(text) > 500 else text
+
+            def sync_call():
+                resp = genai.embed_content(model=self.embedding_model, content=truncated_text)
+                return getattr(resp, "embedding", [])
+
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
         except Exception as e:
             logger.error("Gemini embedding failed", error=str(e))
             return []
@@ -70,16 +82,23 @@ class GeminiService(IAIService):
         try:
             if not self.model:
                 return test_case
-            prompt = self._build_improvement_prompt(test_case, feedback)
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=300,
-                    temperature=0.3,
-                    top_p=0.9,
-                ),
-            )
-            text = getattr(response, "text", None)
+
+            def sync_call():
+                model = self.model
+                assert model is not None
+                prompt = self._build_improvement_prompt(test_case, feedback)
+                response = model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        max_output_tokens=300,
+                        temperature=0.3,
+                        top_p=0.9,
+                        response_mime_type="application/json",
+                    ),
+                )
+                return getattr(response, "text", None) or ""
+
+            text = await asyncio.get_event_loop().run_in_executor(None, sync_call)
             if not text:
                 return test_case
             parsed = self._parse_improved_test_case(text, test_case)
@@ -133,9 +152,8 @@ Priority: {request.priority.value}"""
 
     def _parse_generated_test_case(self, content: str, request: GenerateTestCaseRequest) -> dict:
         try:
-            import re
-            m = re.search(r"\{.*\}", content, re.DOTALL)
-            parsed = json.loads(m.group()) if m else self._manual_parse_test_case(content)
+            extracted = self._extract_json(content)
+            parsed = json.loads(extracted) if extracted else self._manual_parse_test_case(content)
 
             steps: List[TestStep] = []
             for step in parsed.get("test_steps", []):
@@ -169,11 +187,10 @@ Priority: {request.priority.value}"""
 
     def _parse_improved_test_case(self, content: str, original: TestCase) -> dict:
         try:
-            import re
-            m = re.search(r"\{.*\}", content, re.DOTALL)
-            if not m:
+            extracted = self._extract_json(content)
+            if not extracted:
                 return original.__dict__
-            parsed = json.loads(m.group())
+            parsed = json.loads(extracted)
 
             steps: List[TestStep] = []
             for step in parsed.get("test_steps", []):
@@ -198,6 +215,52 @@ Priority: {request.priority.value}"""
         except Exception as e:
             logger.error("Gemini parse improved failed", error=str(e))
             return original.__dict__
+
+    def _extract_json(self, content: str) -> Optional[str]:
+        """Extract a single JSON object from content.
+        Handles code fences and finds the first balanced JSON object.
+        """
+        if not content:
+            return None
+        # Strip code fences if present
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            # remove opening fence and optional language (e.g., ```json)
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned
+            if cleaned.endswith("```"):
+                cleaned = cleaned[: -3]
+        cleaned = cleaned.replace("```json", "").replace("```JSON", "").strip()
+
+        # Try a quick regex first
+        m = re.search(r"\{[\s\S]*\}", cleaned)
+        if m:
+            # Validate
+            try:
+                json.loads(m.group())
+                return m.group()
+            except Exception:
+                pass
+
+        # Fallback: balanced braces scan
+        depth = 0
+        start = -1
+        for i, ch in enumerate(cleaned):
+            if ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start != -1:
+                        candidate = cleaned[start : i + 1]
+                        try:
+                            json.loads(candidate)
+                            return candidate
+                        except Exception:
+                            start = -1
+                            continue
+        return None
 
     def _manual_parse_test_case(self, content: str) -> dict:
         return {
