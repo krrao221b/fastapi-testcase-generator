@@ -2,7 +2,8 @@ from typing import List, Optional
 import structlog
 from app.models.schemas import (
     TestCase, TestCaseCreate, TestCaseUpdate, 
-    GenerateTestCaseRequest, GenerateTestCaseResponse, 
+    GenerateTestCaseRequest, GenerateNewTestCaseRequest, 
+    GenerateTestCaseResponse, GenerateNewTestCaseResponse, 
     SearchSimilarRequest, SimilarTestCase
 )
 from app.repositories.interfaces.test_case_repository import ITestCaseRepository
@@ -31,12 +32,70 @@ class TestCaseService:
         self.jira_service = jira_service
         self.zephyr_service = zephyr_service
         
-    async def get_jira_ticket(self, ticket_key: str) -> Optional[dict]:
-        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123)"""
+    async def get_jira_ticket(self, ticket_key: str, include_similar: bool = True, limit: int = 5, threshold: float = 0.7) -> Optional[dict]:
+        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123).
+        Optionally include similar test cases (default: True).
+        """
         try:
             logger.info("Fetching JIRA ticket from JiraService", ticket_key=ticket_key)
             ticket_data = await self.jira_service.get_issue(ticket_key)
-            return ticket_data
+            if not ticket_data:
+                return None
+
+            # Safely extract fields with sensible defaults — JIRA adapter may not provide all keys
+            description = ticket_data.get("description", "")
+            acceptance_criteria = ticket_data.get("acceptance_criteria", "")
+            additional_context = ticket_data.get("additional_context", "")
+            priority = ticket_data.get("priority") or ticket_data.get("priority", "")
+            tags = ticket_data.get("tags") or []
+            jira_issue_key = ticket_data.get("jira_issue_key") or ticket_data.get("key") or ticket_key
+
+            # Normalize priority to a string
+            if hasattr(priority, "value"):
+                priority_val = priority.value
+            else:
+                priority_val = str(priority) if priority is not None else ""
+
+            combined_query = f"Feature: {description}\nAcceptance: {acceptance_criteria}"
+            if tags:
+                try:
+                    combined_query += f"\nTags: {', '.join(tags)}"
+                except Exception:
+                    # Ensure tags are a list of strings
+                    combined_query += f"\nTags: {tags}"
+            combined_query += f"\nPriority: {priority_val}"
+
+            # Allow caller to skip similarity search for faster initial response
+            similar_cases = []
+            if include_similar:
+                similar_cases = await self.memory_service.search_similar(
+                    feature_description=combined_query,
+                    limit=limit,
+                    threshold=threshold
+                )
+
+            # Convert SimilarTestCase objects to JSON-serializable dicts
+            serializable_similar = []
+            try:
+                for sc in similar_cases or []:
+                    test_case_obj = sc.test_case
+                    # Pydantic models support model_dump / model_dump_json on v2; fall back to dict-like access
+                    try:
+                        tc_dict = test_case_obj.model_dump() if hasattr(test_case_obj, "model_dump") else test_case_obj.dict()
+                    except Exception:
+                        # Last resort: attempt to convert attributes
+                        tc_dict = {k: getattr(test_case_obj, k) for k in dir(test_case_obj) if not k.startswith("_")}
+                    serializable_similar.append({
+                        "test_case": tc_dict,
+                        "similarity_score": round(float(getattr(sc, "similarity_score", 0.0)), 4)
+                    })
+            except Exception:
+                serializable_similar = []
+
+            return {
+                "jira_ticket_data": ticket_data,
+                "similar_cases": serializable_similar,
+            }
         except Exception as e:
             logger.error("Failed to fetch JIRA ticket from JiraService", ticket_key=ticket_key, error=str(e))
             return None
@@ -170,8 +229,37 @@ class TestCaseService:
                     generation_metadata=gen_meta
                 )
 
-            # Generate new test case using AI
-            ai_test_case = await self.ai_service.generate_test_case(request)
+            # Generate new test case using AI (defensive: catch provider errors and return a fallback)
+            try:
+                ai_test_case = await self.ai_service.generate_test_case(request)
+            except Exception as ai_exc:
+                logger.error("AI generation failed, using fallback test case", error=str(ai_exc))
+                # Build a minimal fallback TestCase similar to OpenAIService fallback
+                from datetime import datetime
+                from app.models.schemas import TestStep, TestCase as TC, TestCaseStatus
+                ai_test_case = TC(
+                    id=0,
+                    title=f"Test Case for {request.feature_description[:50]}...",
+                    description="AI-generated test case (fallback)",
+                    feature_description=request.feature_description,
+                    acceptance_criteria=request.acceptance_criteria,
+                    priority=request.priority,
+                    status=TestCaseStatus.DRAFT,
+                    tags=request.tags,
+                    preconditions="System is ready for testing",
+                    test_steps=[
+                        TestStep(
+                            step_number=1,
+                            action="Execute the feature as described",
+                            expected_result="Feature works according to acceptance criteria",
+                            test_data=None
+                        )
+                    ],
+                    expected_result="Test passes successfully",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    jira_issue_key=None
+                )
 
             # If parsed generation looks incomplete, attempt one retry
             def _is_incomplete(tc):
@@ -287,18 +375,91 @@ class TestCaseService:
                 limit=request.limit,
                 threshold=request.similarity_threshold
             )
-            
-            logger.info("Similar test cases search completed", 
+           
+            logger.info("Similar test cases search completed",
                        feature_description=request.feature_description[:100],
                        results_count=len(similar_cases))
-            
+           
             return similar_cases
-            
+           
         except Exception as e:
-            logger.error("Failed to search similar test cases", 
+            logger.error("Failed to search similar test cases",
                         feature_description=request.feature_description, error=str(e))
             raise
-    
+
+    async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> GenerateNewTestCaseResponse:
+        """Generate a new test case using AI and memory search"""
+        try:
+            # Generate new test case using AI
+            ai_test_case = await self.ai_service.generate_new_test_case(request)
+
+            # If parsed generation looks incomplete, attempt one retry
+            def _is_incomplete(tc):
+                try:
+                    if not tc:
+                        return True
+                    if not getattr(tc, 'test_steps', None):
+                        return True
+                    if len(getattr(tc, 'test_steps', [])) == 0:
+                        return True
+                    if not getattr(tc, 'expected_result', None):
+                        return True
+                    return False
+                except Exception:
+                    return True
+
+            if _is_incomplete(ai_test_case):
+                logger.warning("AI generated test case looks incomplete, retrying once", file="test_case_service.py",
+                               method="generate_test_case")
+                print("[warn] test_case_service.py:generate_test_case - AI result incomplete, retrying generation once")
+                ai_test_case = await self.ai_service.generate_test_case(request)
+
+            # Create the test case data dictionary
+            test_case_data = ai_test_case.dict(exclude={"id", "created_at", "updated_at"})
+
+            # Extract JIRA issue key from tags or use the provided jira_issue_key
+            jira_issue_key = request.jira_issue_key
+
+            # If no explicit JIRA issue key provided, look for it in tags
+            if not jira_issue_key and request.tags:
+                for tag in request.tags:
+                    # Check if tag matches JIRA/SCRUM pattern (e.g., "SCRUM-22", "PROJ-123")
+                    if tag and '-' in tag and tag.split('-')[0].isalpha() and tag.split('-')[1].isdigit():
+                        jira_issue_key = tag
+                        break
+
+            # Add JIRA issue key if found
+            if jira_issue_key:
+                test_case_data["jira_issue_key"] = jira_issue_key
+                logger.info("Assigned JIRA issue key to test case", jira_issue_key=jira_issue_key)
+
+            # Persist the newly generated test case
+            logger.info("Saving newly generated test case", feature_description=request.feature_description[:100])
+            test_case_create = TestCaseCreate(**test_case_data)
+            saved_test_case = await self.test_case_repository.create(test_case_create)
+
+            # Store in vector database for future similarity searches
+            try:
+                await self.memory_service.store_test_case(saved_test_case)
+            except Exception as mem_exc:
+                logger.warning("Failed to store test case embedding (generate_new)", error=str(mem_exc))
+
+            gen_meta = {
+                "ai_model_used": "openai",
+                "generation_timestamp": saved_test_case.created_at.isoformat(),
+                "duplicate_detection": False,
+                "is_new_generation": True,
+                "store_skipped": False,
+            }
+            return GenerateNewTestCaseResponse(
+                test_case=saved_test_case,
+                generation_metadata=gen_meta,
+                message=f"Generated and saved new test case with ID {saved_test_case.id}",
+            )
+        except Exception as e:
+            logger.error("Failed to generate new test case", error=str(e))
+            raise
+
     async def get_test_case(self, test_case_id: int) -> Optional[TestCase]:
         """Get a test case by ID"""
         return await self.test_case_repository.get_by_id(test_case_id)

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List
-from app.models.schemas import GenerateTestCaseRequest, TestCase
+from app.models.schemas import GenerateTestCaseRequest, GenerateNewTestCaseRequest, TestCase
 
 
 class IAIService(ABC):
@@ -10,7 +10,12 @@ class IAIService(ABC):
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> TestCase:
         """Generate a test case using AI"""
         pass
-    
+
+    @abstractmethod
+    async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> TestCase:
+        """Generate a new test case using AI without checking for similar test cases in database"""
+        pass
+
     @abstractmethod
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a given text"""

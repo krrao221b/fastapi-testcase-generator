@@ -75,6 +75,9 @@ class GenerateTestCaseRequest(BaseModel):
     # If True, force saving the generated test case even if a similar one exists
     force_save: bool = Field(default=False, description="Force saving generated test case despite similarity checks")
 
+class GenerateNewTestCaseRequest(GenerateTestCaseRequest):
+    generation_seed: Optional[str] = Field(None, description="Seed for generation to ensure reproducibility")
+
 
 class SearchSimilarRequest(BaseModel):
     feature_description: str = Field(..., description="Feature description to search for")
@@ -91,3 +94,8 @@ class GenerateTestCaseResponse(BaseModel):
     test_case: TestCase
     similar_cases: List[SimilarTestCase] = Field(default_factory=list)
     generation_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class GenerateNewTestCaseResponse(BaseModel):
+    test_case: TestCase
+    generation_metadata: Dict[str, Any] = Field(default_factory=dict)
+    message: str = Field(default="No context", description="Message indicating the result of the generation process")

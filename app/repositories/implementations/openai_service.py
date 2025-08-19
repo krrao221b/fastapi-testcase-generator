@@ -7,7 +7,7 @@ from openai import RateLimitError, APIStatusError
 import structlog
 import traceback
 from app.repositories.interfaces.ai_service import IAIService
-from app.models.schemas import GenerateTestCaseRequest, TestCase, TestStep, TestCaseStatus
+from app.models.schemas import GenerateTestCaseRequest, GenerateNewTestCaseRequest, TestCase, TestStep, TestCaseStatus
 from app.config.settings import settings
 
 logger = structlog.get_logger()
@@ -63,7 +63,61 @@ class OpenAIService(IAIService):
             except Exception as e:
                 print("[debug] Failed to extract generated content:", e)
 
-#                 print("[debug] Generated content (preview):", (generated_content or "")[:400].replace('\n', ' '))
+            parsed = self._parse_generated_test_case(generated_content or "", request)
+            logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429: falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().generate_test_case(request)
+            logger.error("OpenAI API error (non-429)", error=str(e))
+            return self._create_fallback_test_case(request)
+        except Exception as e:
+            logger.error("Failed to generate test case", error=str(e))
+            return self._create_fallback_test_case(request)
+
+    async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> TestCase:
+        """Generate new test case without checking similar test case in database"""
+        def sync_call():
+            # Visible debug: show client config (mask API key)
+            try:
+                api_key = getattr(self.client, 'api_key', None)
+                if api_key:
+                    masked = api_key[:4] + '...' + api_key[-4:]
+                else:
+                    masked = None
+            except Exception:
+                masked = None
+
+            prompt = self._build_test_case_prompt(request)
+
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                top_p=0.9,
+                model=self.model
+            )
+
+            # Safely extract generated content
+            generated_content = ""
+            try:
+                if hasattr(response, 'choices') and response.choices:
+                    choice = response.choices[0]
+                    # support different response shapes
+                    if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
+                        generated_content = choice.message.content
+                    else:
+                        generated_content = getattr(choice, 'text', "") or ""
+            except Exception as e:
+                print("[debug] Failed to extract generated content:", e)
+
             parsed = self._parse_generated_test_case(generated_content or "", request)
             logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
             return TestCase(**parsed)
@@ -94,9 +148,12 @@ class OpenAIService(IAIService):
         except (RateLimitError, APIStatusError) as e:
             status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
             if status == 429 or isinstance(e, RateLimitError):
-                logger.warning("OpenAI 429 (embedding): falling back to Gemini")
-                from app.repositories.implementations.gemini_service import GeminiService
-                return await GeminiService().generate_embedding(text)
+                if getattr(settings, "allow_gemini_embedding_fallback", False):
+                    logger.warning("OpenAI 429 (embedding): falling back to Gemini")
+                    from app.repositories.implementations.gemini_service import GeminiService
+                    return await GeminiService().generate_embedding(text)
+                logger.warning("OpenAI 429 (embedding): skipping fallback to avoid mixed vector spaces; returning []")
+                return []
             logger.error("OpenAI API error (non-429) embedding", error=str(e))
             return []
         except Exception as e:
@@ -240,14 +297,15 @@ Please provide an improved version addressing the feedback while maintaining the
                         model=self.model
                     )
 
-                    extracted_text = ""
+                    extracted_text: str = ""
                     if hasattr(extraction_response, 'choices') and extraction_response.choices:
                         ch = extraction_response.choices[0]
                         if hasattr(ch, 'message') and getattr(ch.message, 'content', None):
-                            extracted_text = ch.message.content
+                            extracted_text = ch.message.content or ""
                         else:
                             extracted_text = getattr(ch, 'text', '') or ''
 
+                    extracted_text = extracted_text or ""
                     json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
                     if json_match:
                         parsed_data = json.loads(json_match.group())

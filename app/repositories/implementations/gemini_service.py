@@ -10,6 +10,7 @@ import structlog
 from app.config.settings import settings
 from app.models.schemas import (
     GenerateTestCaseRequest,
+    GenerateNewTestCaseRequest,
     TestCase,
     TestCaseStatus,
     TestStep,
@@ -61,6 +62,16 @@ class GeminiService(IAIService):
         except Exception as e:
             logger.error("Gemini generate_test_case failed", error=str(e))
             return self._create_fallback_test_case(request)
+
+    async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> TestCase:
+        """Generate a new test case without similarity checks.
+
+        For Gemini, generation is stateless with respect to the DB, so this
+        simply delegates to generate_test_case while accepting the more
+        specific request type for interface completeness.
+        """
+        # GenerateNewTestCaseRequest extends GenerateTestCaseRequest, so safe to pass through
+        return await self.generate_test_case(request)
 
     async def generate_embedding(self, text: str) -> List[float]:
         try:

@@ -6,6 +6,7 @@ import structlog
 from app.models.schemas import (
     TestCase, TestCaseCreate, TestCaseUpdate,
     GenerateTestCaseRequest, GenerateTestCaseResponse,
+    GenerateNewTestCaseRequest, GenerateNewTestCaseResponse,
     SearchSimilarRequest, SimilarTestCase
 )
 from app.services.test_case_service import TestCaseService
@@ -26,6 +27,23 @@ async def generate_test_case(
     try:
         logger.info("Generating test case", feature_description=request.feature_description[:100])
         response = await service.generate_test_case(request)
+        return response
+    except Exception as e:
+        logger.error("Failed to generate test case", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate test case"
+        )
+
+@router.post("/generate-new", response_model=GenerateNewTestCaseResponse)
+async def generate_new_test_case(
+    request: GenerateNewTestCaseRequest,
+    service: TestCaseService = Depends(get_test_case_service)
+):
+    """Generate a new test case using AI and memory search"""
+    try:
+        logger.info("Generating test case", feature_description=request.feature_description[:100])
+        response = await service.generate_new_test_case(request)
         return response
     except Exception as e:
         logger.error("Failed to generate test case", error=str(e))
