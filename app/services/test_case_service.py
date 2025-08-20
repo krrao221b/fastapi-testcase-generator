@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 import structlog
 from app.models.schemas import (
     TestCase, TestCaseCreate, TestCaseUpdate, 
@@ -13,6 +13,13 @@ from app.repositories.interfaces.jira_service import IJiraService
 from app.repositories.interfaces.zephyr_service import IZephyrService
 
 logger = structlog.get_logger()
+
+
+from app.core.cache import (
+    JIRA_TICKET_CACHE,
+    CACHE_TTL_OK,
+    CACHE_TTL_ERROR,
+)
 
 
 class TestCaseService:
@@ -32,73 +39,91 @@ class TestCaseService:
         self.jira_service = jira_service
         self.zephyr_service = zephyr_service
         
-    async def get_jira_ticket(self, ticket_key: str, include_similar: bool = True, limit: int = 5, threshold: float = 0.7) -> Optional[dict]:
-        """Fetch JIRA ticket details by ticket key (e.g., PROJ-123).
-        Optionally include similar test cases (default: True).
+    async def get_jira_ticket(self, ticket_key: str, include_similar: bool = True, limit: int = 5, threshold: float = 0.7) -> Optional[Dict[str, Any]]:
+        """Fetch JIRA ticket details by key (e.g., PROJ-123).
+        Two-phase behavior:
+            - include_similar=False: return ticket only, cache the ticket.
+            - include_similar=True: reuse cached ticket (fallback to API), compute similar fresh (no cache).
         """
         try:
-            logger.info("Fetching JIRA ticket from JiraService", ticket_key=ticket_key)
-            ticket_data = await self.jira_service.get_issue(ticket_key)
-            if not ticket_data:
-                return None
+            # 1) Resolve ticket data from cache or API
+            cache_key_ticket = ("jira_ticket", ticket_key)
+            ticket_data: Optional[Dict[str, Any]] = JIRA_TICKET_CACHE.get(cache_key_ticket)
 
-            # Safely extract fields with sensible defaults — JIRA adapter may not provide all keys
+            if ticket_data is None:
+                logger.info("Jira ticket cache miss, calling JiraService", ticket_key=ticket_key)
+                ticket_data = await self.jira_service.get_issue(ticket_key)
+                if not ticket_data:
+                    # Negative-cache the miss briefly to avoid thundering herd on repeated 404s
+                    JIRA_TICKET_CACHE.set(cache_key_ticket, None, CACHE_TTL_ERROR)
+                    return None
+                # Cache successful ticket fetch
+                JIRA_TICKET_CACHE.set(cache_key_ticket, ticket_data, CACHE_TTL_OK)
+
+            # If caller doesn't want similar results, return immediately (fast path)
+            if not include_similar:
+                return {"jira_ticket_data": ticket_data, "similar_cases": []}
+
+            # 2) Build combined query for embeddings/similarity
             description = ticket_data.get("description", "")
             acceptance_criteria = ticket_data.get("acceptance_criteria", "")
             additional_context = ticket_data.get("additional_context", "")
-            priority = ticket_data.get("priority") or ticket_data.get("priority", "")
+            priority = ticket_data.get("priority") or ""
             tags = ticket_data.get("tags") or []
-            jira_issue_key = ticket_data.get("jira_issue_key") or ticket_data.get("key") or ticket_key
 
             # Normalize priority to a string
-            if hasattr(priority, "value"):
-                priority_val = priority.value
-            else:
-                priority_val = str(priority) if priority is not None else ""
+            priority_val = getattr(priority, "value", None) or (str(priority) if priority is not None else "")
 
-            combined_query = f"Feature: {description}\nAcceptance: {acceptance_criteria}"
+            combined_parts = [
+                f"Feature: {description}",
+                f"Acceptance: {acceptance_criteria}",
+            ]
+            if additional_context:
+                combined_parts.append(f"Context: {additional_context}")
             if tags:
                 try:
-                    combined_query += f"\nTags: {', '.join(tags)}"
+                    combined_parts.append(f"Tags: {', '.join(tags)}")
                 except Exception:
-                    # Ensure tags are a list of strings
-                    combined_query += f"\nTags: {tags}"
-            combined_query += f"\nPriority: {priority_val}"
+                    combined_parts.append(f"Tags: {tags}")
+            combined_parts.append(f"Priority: {priority_val}")
 
-            # Allow caller to skip similarity search for faster initial response
-            similar_cases = []
-            if include_similar:
+            # Cap the query length to avoid huge payloads to embeddings
+            combined_query = "\n".join(combined_parts)
+            if len(combined_query) > 8000:
+                combined_query = combined_query[:8000]
+
+            # 3) Compute similar fresh each time (no caching for demo accuracy)
+            try:
                 similar_cases = await self.memory_service.search_similar(
                     feature_description=combined_query,
                     limit=limit,
-                    threshold=threshold
+                    threshold=threshold,
                 )
+            except Exception as sim_err:
+                logger.warning("Similarity search failed, returning ticket only", ticket_key=ticket_key, error=str(sim_err))
+                return {"jira_ticket_data": ticket_data, "similar_cases": []}
 
-            # Convert SimilarTestCase objects to JSON-serializable dicts
-            serializable_similar = []
+            # Convert to JSON-serializable output
+            serializable_similar: List[Dict[str, Any]] = []
             try:
                 for sc in similar_cases or []:
                     test_case_obj = sc.test_case
-                    # Pydantic models support model_dump / model_dump_json on v2; fall back to dict-like access
                     try:
                         tc_dict = test_case_obj.model_dump() if hasattr(test_case_obj, "model_dump") else test_case_obj.dict()
                     except Exception:
-                        # Last resort: attempt to convert attributes
                         tc_dict = {k: getattr(test_case_obj, k) for k in dir(test_case_obj) if not k.startswith("_")}
                     serializable_similar.append({
                         "test_case": tc_dict,
-                        "similarity_score": round(float(getattr(sc, "similarity_score", 0.0)), 4)
+                        "similarity_score": round(float(getattr(sc, "similarity_score", 0.0)), 4),
                     })
             except Exception:
                 serializable_similar = []
 
-            return {
-                "jira_ticket_data": ticket_data,
-                "similar_cases": serializable_similar,
-            }
+            return {"jira_ticket_data": ticket_data, "similar_cases": serializable_similar}
         except Exception as e:
-            logger.error("Failed to fetch JIRA ticket from JiraService", ticket_key=ticket_key, error=str(e))
-            return None
+            # Let caller see this as a server error at the route level; don't translate to 404
+            logger.error("Failed to fetch JIRA ticket", ticket_key=ticket_key, error=str(e))
+            raise
     
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> GenerateTestCaseResponse:
         """Generate a new test case using AI and memory search"""
