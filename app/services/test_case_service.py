@@ -4,7 +4,8 @@ from app.models.schemas import (
     TestCase, TestCaseCreate, TestCaseUpdate, 
     GenerateTestCaseRequest, GenerateNewTestCaseRequest, 
     GenerateTestCaseResponse, GenerateNewTestCaseResponse, 
-    SearchSimilarRequest, SimilarTestCase
+    SearchSimilarRequest, SimilarTestCase,
+    SaveAsNewTestCaseRequest, SaveAsNewTestCaseResponse,
 )
 from app.repositories.interfaces.test_case_repository import ITestCaseRepository
 from app.repositories.interfaces.memory_service import IMemoryService
@@ -593,4 +594,54 @@ class TestCaseService:
         except Exception as e:
             logger.error("Failed to improve test case with AI", 
                         test_case_id=test_case_id, error=str(e))
+            raise
+
+    async def save_test_case_as_new(self, base_test_case_id: int, payload: SaveAsNewTestCaseRequest) -> SaveAsNewTestCaseResponse:
+        """Clone an existing test case, apply user edits, and save as a new one (original unchanged)."""
+        try:
+            base = await self.test_case_repository.get_by_id(base_test_case_id)
+            if not base:
+                raise ValueError(f"Base test case {base_test_case_id} not found")
+
+            # Merge edits over the base
+            new_title = payload.title or base.title
+            # Avoid identical title confusion
+            if new_title.strip() == (base.title or '').strip():
+                new_title = f"{new_title} (Copy)"
+
+            merged_tags = payload.tags if payload.tags is not None else list(getattr(base, "tags", []) or [])
+            # Add lineage tag (non-breaking, optional)
+            lineage_tag = f"cloned_from:{base.id}"
+            if lineage_tag not in merged_tags:
+                merged_tags.append(lineage_tag)
+
+            create_dto = TestCaseCreate(
+                title=new_title,
+                description=payload.description or base.description,
+                feature_description=payload.feature_description or base.feature_description,
+                acceptance_criteria=payload.acceptance_criteria or base.acceptance_criteria,
+                priority=payload.priority or base.priority,
+                tags=merged_tags,
+                preconditions=payload.preconditions if payload.preconditions is not None else base.preconditions,
+                test_steps=payload.test_steps if payload.test_steps is not None else list(base.test_steps or []),
+                expected_result=payload.expected_result or base.expected_result,
+                jira_issue_key=payload.jira_issue_key if payload.jira_issue_key is not None else base.jira_issue_key,
+            )
+
+            # Persist the new test case
+            created = await self.test_case_repository.create(create_dto)
+
+            # Index embeddings for the new case
+            try:
+                await self.memory_service.store_test_case(created)
+            except Exception as mem_e:
+                logger.warning("Saved new test case but failed to store embedding", test_case_id=created.id, error=str(mem_e))
+
+            return SaveAsNewTestCaseResponse(
+                test_case=created,
+                cloned_from_id=base.id,
+                message="Saved as new test case",
+            )
+        except Exception as e:
+            logger.error("Failed to save test case as new", base_test_case_id=base_test_case_id, error=str(e))
             raise
