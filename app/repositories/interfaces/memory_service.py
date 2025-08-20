@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 from app.models.schemas import TestCase, SimilarTestCase
 
 
@@ -12,7 +12,7 @@ class IMemoryService(ABC):
         pass
     
     @abstractmethod
-    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7, tags: List[str] = None, priority: str = None) -> List[SimilarTestCase]:
+    async def search_similar(self, feature_description: str, limit: int = 5, threshold: float = 0.7, tags: Optional[List[str]] = None, priority: Optional[str] = None) -> List[SimilarTestCase]:
         """Search for similar test cases using a text query (acceptance criteria or feature description)"""
         pass
     

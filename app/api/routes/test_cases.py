@@ -1,5 +1,5 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 import structlog
 
@@ -68,6 +68,21 @@ async def search_similar_test_cases(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to search similar test cases"
+        )
+
+@router.post("/reindex", response_model=int)
+async def reindex_all(
+    service: TestCaseService = Depends(get_test_case_service)
+):
+    """Recompute embeddings for all test cases and update Chroma/SQLite."""
+    try:
+        count = await service.reindex_all_test_cases()
+        return count
+    except Exception as e:
+        logger.error("Failed to reindex all test cases", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reindex all test cases"
         )
 
 

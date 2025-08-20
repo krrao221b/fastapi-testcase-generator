@@ -83,6 +83,9 @@ class SearchSimilarRequest(BaseModel):
     feature_description: str = Field(..., description="Feature description to search for")
     limit: int = Field(default=5, ge=1, le=20, description="Number of similar test cases to return")
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
+    # Optional filters to narrow results
+    tags: Optional[List[str]] = Field(default=None, description="Require these tags to be present on matching cases")
+    priority: Optional[TestCasePriority] = Field(default=None, description="Require this priority on matching cases")
 
 
 class SimilarTestCase(BaseModel):

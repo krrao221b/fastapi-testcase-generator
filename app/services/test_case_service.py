@@ -52,6 +52,8 @@ class TestCaseService:
         include_similar: bool = True,
         limit: int = 5,
         threshold: float = 0.7,
+        tags: Optional[List[str]] = None,
+        priority: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fetch JIRA ticket details by key (e.g., PROJ-123).
         Two-phase behavior:
@@ -82,15 +84,39 @@ class TestCaseService:
                 return {"jira_ticket_data": ticket_data, "similar_cases": []}
 
             # 2) Build combined query for embeddings/similarity
-            description = ticket_data.get("description", "")
-            acceptance_criteria = ticket_data.get("acceptance_criteria", "")
-            additional_context = ticket_data.get("additional_context", "")
-            priority = ticket_data.get("priority") or ""
-            tags = ticket_data.get("tags") or []
+            def _norm(txt: str, limit: int = 1600) -> str:
+                try:
+                    t = (txt or "")
+                    # collapse whitespace/newlines
+                    t = " ".join(t.split())
+                    return t[:limit]
+                except Exception:
+                    return (txt or "")[:limit]
+
+            description = _norm(ticket_data.get("description", ""), 2000)
+            acceptance_criteria = _norm(ticket_data.get("acceptance_criteria", ""), 2000)
+            additional_context = _norm(ticket_data.get("additional_context", ""), 1200)
+            priority_from_ticket = ticket_data.get("priority") or ""
+            raw_tags = ticket_data.get("tags") or []
+            # normalize tags: lowercase, unique, short tokens only
+            try:
+                ticket_tags_norm: List[str] = []
+                seen = set()
+                for tg in raw_tags:
+                    if not tg:
+                        continue
+                    val = str(tg).strip().lower()
+                    if not val or len(val) > 50:
+                        continue
+                    if val not in seen:
+                        seen.add(val)
+                        ticket_tags_norm.append(val)
+            except Exception:
+                ticket_tags_norm = raw_tags if isinstance(raw_tags, list) else [str(raw_tags)]
 
             # Normalize priority to a string
-            priority_val = getattr(priority, "value", None) or (
-                str(priority) if priority is not None else ""
+            priority_val = getattr(priority_from_ticket, "value", None) or (
+                str(priority_from_ticket) if priority_from_ticket is not None else ""
             )
 
             combined_parts = [
@@ -99,11 +125,11 @@ class TestCaseService:
             ]
             if additional_context:
                 combined_parts.append(f"Context: {additional_context}")
-            if tags:
+            if ticket_tags_norm:
                 try:
-                    combined_parts.append(f"Tags: {', '.join(tags)}")
+                    combined_parts.append(f"Tags: {', '.join(ticket_tags_norm)}")
                 except Exception:
-                    combined_parts.append(f"Tags: {tags}")
+                    combined_parts.append(f"Tags: {ticket_tags_norm}")
             combined_parts.append(f"Priority: {priority_val}")
 
             # Cap the query length to avoid huge payloads to embeddings
@@ -113,10 +139,20 @@ class TestCaseService:
 
             # 3) Compute similar fresh each time (no caching for demo accuracy)
             try:
+                # Select filters: prefer explicit params if provided; otherwise derive from ticket
+                effective_tags: Optional[List[str]] = tags if tags is not None else (
+                    ticket_tags_norm if ticket_tags_norm else None
+                )
+                prio_str = priority if priority else (str(priority_val) if priority_val else None)
+                if isinstance(prio_str, str):
+                    prio_str = prio_str.lower()
+
                 similar_cases = await self.memory_service.search_similar(
                     feature_description=combined_query,
                     limit=limit,
                     threshold=threshold,
+                    tags=effective_tags,
+                    priority=prio_str,
                 )
             except Exception as sim_err:
                 logger.warning(
@@ -509,10 +545,19 @@ class TestCaseService:
     ) -> List[SimilarTestCase]:
         """Search for similar test cases"""
         try:
+            # Normalize optional filters
+            filt_tags = request.tags if isinstance(getattr(request, "tags", None), list) else None
+            prio = None
+            rp = getattr(request, "priority", None)
+            if rp is not None:
+                prio = getattr(rp, "value", str(rp))
+
             similar_cases = await self.memory_service.search_similar(
                 feature_description=request.feature_description,
                 limit=request.limit,
                 threshold=request.similarity_threshold,
+                tags=filt_tags,
+                priority=prio,
             )
 
             logger.info(
@@ -529,6 +574,23 @@ class TestCaseService:
                 feature_description=request.feature_description,
                 error=str(e),
             )
+            raise
+
+    async def reindex_all_test_cases(self) -> int:
+        """Recompute and store embeddings for all test cases.
+        Returns the number of items reindexed.
+        """
+        try:
+            all_cases = await self.test_case_repository.get_all(skip=0, limit=10_000)
+            count = 0
+            for tc in all_cases:
+                ok = await self.memory_service.update_test_case_embedding(tc)
+                if ok:
+                    count += 1
+            logger.info("Reindex completed", total=len(all_cases), success=count)
+            return count
+        except Exception as e:
+            logger.error("Failed to reindex all test cases", error=str(e))
             raise
 
     async def generate_new_test_case(
