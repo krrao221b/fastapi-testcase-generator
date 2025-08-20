@@ -28,10 +28,10 @@ dist/
 *.egg-info/
 *.egg
 
-# Database and data files
-*.db
-data/
-*.sqlite3
+# # Database and data files
+# *.db
+# data/
+# *.sqlite3
 
 # Logs
 *.log
