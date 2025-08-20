@@ -99,3 +99,24 @@ class GenerateNewTestCaseResponse(BaseModel):
     test_case: TestCase
     generation_metadata: Dict[str, Any] = Field(default_factory=dict)
     message: str = Field(default="No context", description="Message indicating the result of the generation process")
+
+class SaveAsNewTestCaseRequest(BaseModel):
+    base_test_case_id: int
+    title: Optional[str] = None
+    description: Optional[str] = None
+    feature_description: Optional[str] = None
+    acceptance_criteria: Optional[str] = None
+    priority: Optional[TestCasePriority] = None
+    status: Optional[TestCaseStatus] = None
+    tags: Optional[List[str]] = None
+    preconditions: Optional[str] = None
+    test_steps: Optional[List[TestStep]] = None
+    expected_result: Optional[str] = None
+    jira_issue_key: Optional[str] = None
+    # Explicitly bypass duplicate/skip logic for this flow
+    force_save: bool = True
+    
+class SaveAsNewTestCaseResponse(BaseModel):
+    test_case: TestCase
+    cloned_from_id: int
+    message: str
