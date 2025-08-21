@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, Enum, JSON, LargeBinary
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from app.models.schemas import TestCaseStatus, TestCasePriority
@@ -25,6 +25,8 @@ class TestCaseModel(Base):
     created_by = Column(String(100), nullable=True)
     jira_issue_key = Column(String(50), nullable=True, index=True)
     zephyr_test_id = Column(String(100), nullable=True, index=True)
+    # Store embedding as binary blob for compact storage and fast retrieval
+    embedding_vector = Column(LargeBinary, nullable=True)
 
     def __repr__(self):
         return f"<TestCase(id={self.id}, title='{self.title}', status='{self.status}')>"

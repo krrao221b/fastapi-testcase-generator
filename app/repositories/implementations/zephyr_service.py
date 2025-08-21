@@ -13,8 +13,7 @@ class ZephyrScaleService(IZephyrService):
     
     def __init__(self):
         self.base_url = settings.zephyr_base_url
-        self.access_key = settings.zephyr_access_key
-        self.secret_key = settings.zephyr_secret_key
+        self.api_token = settings.zephyr_api_token
     
     async def create_test_case(self, test_case: TestCase, project_key: str) -> Optional[str]:
         """Create a test case in Zephyr and return the test ID"""
@@ -241,16 +240,10 @@ class ZephyrScaleService(IZephyrService):
     
     def _get_auth_headers(self) -> Dict[str, str]:
         """Get authentication headers for Zephyr API"""
-        # This is a simplified implementation
-        # In production, you'd implement proper JWT token generation for Zephyr
-        import base64
-        credentials = f"{self.access_key}:{self.secret_key}"
-        encoded_credentials = base64.b64encode(credentials.encode()).decode()
-        
         return {
-            "Authorization": f"Basic {encoded_credentials}"
+            "Authorization": f"Bearer {self.api_token}"
         }
     
     def _is_configured(self) -> bool:
         """Check if Zephyr service is properly configured"""
-        return bool(self.base_url and self.access_key and self.secret_key)
+        return bool(self.base_url and self.api_token)

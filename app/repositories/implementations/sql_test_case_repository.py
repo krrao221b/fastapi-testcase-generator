@@ -14,7 +14,8 @@ class SQLTestCaseRepository(ITestCaseRepository):
     
     async def create(self, test_case: TestCaseCreate) -> TestCase:
         """Create a new test case"""
-        db_test_case = TestCaseModel(**test_case.model_dump())
+        # Exclude None so DB defaults (like status) can apply when omitted
+        db_test_case = TestCaseModel(**test_case.model_dump(exclude_none=True))
         self.db.add(db_test_case)
         self.db.commit()
         self.db.refresh(db_test_case)
@@ -64,7 +65,8 @@ class SQLTestCaseRepository(ITestCaseRepository):
         matching_cases = []
         
         for test_case in db_test_cases:
-            if test_case.tags and any(tag in test_case.tags for tag in tags):
+            case_tags = getattr(test_case, "tags", None) or []
+            if isinstance(case_tags, list) and any(tag in case_tags for tag in tags):
                 matching_cases.append(TestCase.model_validate(test_case))
         
         return matching_cases

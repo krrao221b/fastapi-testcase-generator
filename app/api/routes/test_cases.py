@@ -1,11 +1,12 @@
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 import structlog
 
 from app.models.schemas import (
-    TestCase, TestCaseCreate, TestCaseUpdate,
+    SaveAsNewTestCaseRequest, SaveAsNewTestCaseResponse, TestCase, TestCaseCreate, TestCaseUpdate,
     GenerateTestCaseRequest, GenerateTestCaseResponse,
+    GenerateNewTestCaseRequest, GenerateNewTestCaseResponse,
     SearchSimilarRequest, SimilarTestCase
 )
 from app.services.test_case_service import TestCaseService
@@ -34,6 +35,23 @@ async def generate_test_case(
             detail="Failed to generate test case"
         )
 
+@router.post("/generate-new", response_model=GenerateNewTestCaseResponse)
+async def generate_new_test_case(
+    request: GenerateNewTestCaseRequest,
+    service: TestCaseService = Depends(get_test_case_service)
+):
+    """Generate a new test case using AI and memory search"""
+    try:
+        logger.info("Generating test case", feature_description=request.feature_description[:100])
+        response = await service.generate_new_test_case(request)
+        return response
+    except Exception as e:
+        logger.error("Failed to generate test case", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate test case"
+        )
+
 
 @router.post("/search-similar", response_model=List[SimilarTestCase])
 async def search_similar_test_cases(
@@ -50,6 +68,21 @@ async def search_similar_test_cases(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to search similar test cases"
+        )
+
+@router.post("/reindex", response_model=int)
+async def reindex_all(
+    service: TestCaseService = Depends(get_test_case_service)
+):
+    """Recompute embeddings for all test cases and update Chroma/SQLite."""
+    try:
+        count = await service.reindex_all_test_cases()
+        return count
+    except Exception as e:
+        logger.error("Failed to reindex all test cases", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reindex all test cases"
         )
 
 
@@ -130,4 +163,20 @@ async def improve_test_case(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to improve test case"
+        )
+@router.post("/{test_case_id}/save-as-new")
+async def save_as_new(
+    test_case_id: int,
+    payload: SaveAsNewTestCaseRequest,
+    service: TestCaseService = Depends(get_test_case_service)
+) -> SaveAsNewTestCaseResponse:
+    """Save a test case as a new test case"""
+    try:
+        new_test_case = await service.save_test_case_as_new(test_case_id, payload)
+        return new_test_case
+    except Exception as e:
+        logger.error("Failed to save test case as new", test_case_id=test_case_id, error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save test case as new"
         )

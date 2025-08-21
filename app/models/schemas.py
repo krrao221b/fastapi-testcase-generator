@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -34,10 +34,12 @@ class TestCaseBase(BaseModel):
     preconditions: Optional[str] = Field(None, description="Preconditions for test execution")
     test_steps: List[TestStep] = Field(..., description="List of test steps")
     expected_result: str = Field(..., description="Overall expected result")
+    jira_issue_key: Optional[str] = Field(None, description="Associated JIRA issue key")
 
 
 class TestCaseCreate(TestCaseBase):
-    pass
+    # Allow callers to set status at create time; if None, DB default applies
+    status: Optional[TestCaseStatus] = None
 
 
 class TestCaseUpdate(BaseModel):
@@ -49,6 +51,7 @@ class TestCaseUpdate(BaseModel):
     test_steps: Optional[List[TestStep]] = None
     expected_result: Optional[str] = None
     status: Optional[TestCaseStatus] = None
+    jira_issue_key: Optional[str] = None
 
 
 class TestCase(TestCaseBase):
@@ -57,7 +60,6 @@ class TestCase(TestCaseBase):
     created_at: datetime
     updated_at: datetime
     created_by: Optional[str] = None
-    jira_issue_key: Optional[str] = None
     zephyr_test_id: Optional[str] = None
 
     class Config:
@@ -70,12 +72,21 @@ class GenerateTestCaseRequest(BaseModel):
     additional_context: Optional[str] = Field(None, description="Additional context or requirements")
     priority: TestCasePriority = Field(default=TestCasePriority.MEDIUM)
     tags: List[str] = Field(default_factory=list)
+    jira_issue_key: Optional[str] = Field(None, description="JIRA issue key to associate with the test case")
+    # If True, force saving the generated test case even if a similar one exists
+    force_save: bool = Field(default=False, description="Force saving generated test case despite similarity checks")
+
+class GenerateNewTestCaseRequest(GenerateTestCaseRequest):
+    generation_seed: Optional[str] = Field(None, description="Seed for generation to ensure reproducibility")
 
 
 class SearchSimilarRequest(BaseModel):
     feature_description: str = Field(..., description="Feature description to search for")
     limit: int = Field(default=5, ge=1, le=20, description="Number of similar test cases to return")
     similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
+    # Optional filters to narrow results
+    tags: Optional[List[str]] = Field(default=None, description="Require these tags to be present on matching cases")
+    priority: Optional[TestCasePriority] = Field(default=None, description="Require this priority on matching cases")
 
 
 class SimilarTestCase(BaseModel):
@@ -87,3 +98,63 @@ class GenerateTestCaseResponse(BaseModel):
     test_case: TestCase
     similar_cases: List[SimilarTestCase] = Field(default_factory=list)
     generation_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+class GenerateNewTestCaseResponse(BaseModel):
+    test_case: TestCase
+    generation_metadata: Dict[str, Any] = Field(default_factory=dict)
+    message: str = Field(default="No context", description="Message indicating the result of the generation process")
+
+class SaveAsNewTestCaseRequest(BaseModel):
+    base_test_case_id: int
+    title: Optional[str] = None
+    description: Optional[str] = None
+    feature_description: Optional[str] = None
+    acceptance_criteria: Optional[str] = None
+    priority: Optional[TestCasePriority] = None
+    status: Optional[TestCaseStatus] = None
+    tags: Optional[List[str]] = None
+    preconditions: Optional[str] = None
+    test_steps: Optional[List[TestStep]] = None
+    expected_result: Optional[str] = None
+    jira_issue_key: Optional[str] = None
+    # Explicitly bypass duplicate/skip logic for this flow
+    force_save: bool = True
+    
+    # Accept case-insensitive strings like "High", "HIGH" for priority
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _normalize_priority(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, TestCasePriority):
+            return v
+        # Accept dicts like {"value": "High"}
+        if isinstance(v, dict):
+            v = v.get("value", v)
+        try:
+            s = str(v).strip().lower()
+            return TestCasePriority(s)
+        except Exception:
+            # Let pydantic raise a validation error later if it's truly invalid
+            return v
+
+    # Accept case-insensitive strings or dicts for status as well
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, TestCaseStatus):
+            return v
+        if isinstance(v, dict):
+            v = v.get("value", v)
+        try:
+            s = str(v).strip().lower()
+            return TestCaseStatus(s)
+        except Exception:
+            return v
+    
+class SaveAsNewTestCaseResponse(BaseModel):
+    test_case: TestCase
+    cloned_from_id: int
+    message: str

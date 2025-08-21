@@ -10,6 +10,8 @@ from app.repositories.interfaces.zephyr_service import IZephyrService
 from app.repositories.implementations.sql_test_case_repository import SQLTestCaseRepository
 from app.repositories.implementations.chroma_memory_service import ChromaMemoryService
 from app.repositories.implementations.openai_service import OpenAIService
+from app.repositories.implementations.gemini_service import GeminiService
+from app.config.settings import settings
 from app.repositories.implementations.jira_service import AtlassianJiraService
 from app.repositories.implementations.zephyr_service import ZephyrScaleService
 
@@ -32,18 +34,34 @@ class Container:
         """Get test case repository instance"""
         return SQLTestCaseRepository(db)
     
-    @lru_cache()
-    def memory_service(self) -> IMemoryService:
-        """Get memory service instance (singleton)"""
+    def memory_service(self, db: Session) -> IMemoryService:
+        """Get memory service instance using the provided DB session.
+        Note: memory service depends on a request-scoped DB session, so we
+        create a new instance per call rather than caching a global singleton.
+        """
+        # Create a single ChromaMemoryService instance and reuse it across requests,
+        # but update its DB session for each request. This avoids expensive re-inits
+        # (embedding model probes, Chroma client creation) on every request which
+        # can block the server when multiple requests happen concurrently.
         if self._memory_service is None:
-            self._memory_service = ChromaMemoryService()
+            self._memory_service = ChromaMemoryService(db)
+        else:
+            # update the request-scoped DB session on the cached instance
+            try:
+                self._memory_service.db = db
+            except Exception:
+                # fallback: re-create if the instance cannot accept a new db
+                self._memory_service = ChromaMemoryService(db)
         return self._memory_service
     
     @lru_cache()
     def ai_service(self) -> IAIService:
-        """Get AI service instance (singleton)"""
+        """Get AI service instance (singleton). Prefer OpenAI; fallback to Gemini if OpenAI key not set."""
         if self._ai_service is None:
-            self._ai_service = OpenAIService()
+            if settings.openai_api_key:
+                self._ai_service = OpenAIService()
+            else:
+                self._ai_service = GeminiService()
         return self._ai_service
     
     @lru_cache()
@@ -64,7 +82,7 @@ class Container:
         """Get test case service instance"""
         return TestCaseService(
             test_case_repository=self.test_case_repository(db),
-            memory_service=self.memory_service(),
+            memory_service=self.memory_service(db),
             ai_service=self.ai_service(),
             jira_service=self.jira_service(),
             zephyr_service=self.zephyr_service()
@@ -81,9 +99,9 @@ def get_test_case_repository(db: Session = Depends(get_database)) -> ITestCaseRe
     return container.test_case_repository(db)
 
 
-def get_memory_service() -> IMemoryService:
-    """FastAPI dependency for memory service"""
-    return container.memory_service()
+def get_memory_service(db: Session = Depends(get_database)) -> IMemoryService:
+    """FastAPI dependency for memory service using a DB session"""
+    return container.memory_service(db)
 
 
 def get_ai_service() -> IAIService:

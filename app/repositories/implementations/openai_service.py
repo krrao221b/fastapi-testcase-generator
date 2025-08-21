@@ -3,9 +3,11 @@ import json
 from typing import List
 from datetime import datetime
 from openai import OpenAI
+from openai import RateLimitError, APIStatusError
 import structlog
+import traceback
 from app.repositories.interfaces.ai_service import IAIService
-from app.models.schemas import GenerateTestCaseRequest, TestCase, TestStep, TestCaseStatus
+from app.models.schemas import GenerateTestCaseRequest, GenerateNewTestCaseRequest, TestCase, TestStep, TestCaseStatus
 from app.config.settings import settings
 
 logger = structlog.get_logger()
@@ -23,127 +25,197 @@ class OpenAIService(IAIService):
     async def generate_test_case(self, request: GenerateTestCaseRequest) -> TestCase:
         """Generate a test case using Copilot Models API (async wrapper)"""
         def sync_call():
+            # Visible debug: show client config (mask API key)
             try:
-                prompt = self._build_test_case_prompt(request)
-                response = self.client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": self._get_system_prompt()},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.8,
-                    top_p=0.9,
-                    model=self.model
-                )
-                generated_content = response.choices[0].message.content or ""
-                parsed = self._parse_generated_test_case(generated_content, request)
-                return TestCase(**parsed)
+                api_key = getattr(self.client, 'api_key', None)
+                if api_key:
+                    masked = api_key[:4] + '...' + api_key[-4:]
+                else:
+                    masked = None
+            except Exception:
+                masked = None
+
+            prompt = self._build_test_case_prompt(request)
+
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                top_p=0.9,
+                model=self.model
+            )
+
+#                 print("[debug] OpenAI call returned")
+#                 logger.info("OpenAI response received", response_repr=str(response)[:1000])
+
+                # Safely extract generated content
+            generated_content = ""
+            try:
+                if hasattr(response, 'choices') and response.choices:
+                    choice = response.choices[0]
+                        # support different response shapes
+                    if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
+                        generated_content = choice.message.content
+                    else:
+                        generated_content = getattr(choice, 'text', "") or ""
             except Exception as e:
-                logger.error("Failed to generate test case", error=str(e))
-                return self._create_fallback_test_case(request)
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+                print("[debug] Failed to extract generated content:", e)
+
+            parsed = self._parse_generated_test_case(generated_content or "", request)
+            logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429: falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().generate_test_case(request)
+            logger.error("OpenAI API error (non-429)", error=str(e))
+            return self._create_fallback_test_case(request)
+        except Exception as e:
+            logger.error("Failed to generate test case", error=str(e))
+            return self._create_fallback_test_case(request)
+
+    async def generate_new_test_case(self, request: GenerateNewTestCaseRequest) -> TestCase:
+        """Generate new test case without checking similar test case in database"""
+        def sync_call():
+            # Visible debug: show client config (mask API key)
+            try:
+                api_key = getattr(self.client, 'api_key', None)
+                if api_key:
+                    masked = api_key[:4] + '...' + api_key[-4:]
+                else:
+                    masked = None
+            except Exception:
+                masked = None
+
+            prompt = self._build_test_case_prompt(request)
+
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                top_p=0.9,
+                model=self.model
+            )
+
+            # Safely extract generated content
+            generated_content = ""
+            try:
+                if hasattr(response, 'choices') and response.choices:
+                    choice = response.choices[0]
+                    # support different response shapes
+                    if hasattr(choice, 'message') and getattr(choice.message, 'content', None):
+                        generated_content = choice.message.content
+                    else:
+                        generated_content = getattr(choice, 'text', "") or ""
+            except Exception as e:
+                print("[debug] Failed to extract generated content:", e)
+
+            parsed = self._parse_generated_test_case(generated_content or "", request)
+            logger.info("Parsed test case", parsed_keys=list(parsed.keys()))
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429: falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().generate_test_case(request)
+            logger.error("OpenAI API error (non-429)", error=str(e))
+            return self._create_fallback_test_case(request)
+        except Exception as e:
+            logger.error("Failed to generate test case", error=str(e))
+            return self._create_fallback_test_case(request)
 
     async def generate_embedding(self, text: str) -> List[float]:
         """Generate embedding for a given text using Copilot Models API (async wrapper)"""
         def sync_call():
-            try:
-                response = self.client.embeddings.create(
-                    input=text,
-                    model=self.embedding_model
-                )
-                return response.data[0].embedding
-            except Exception as e:
-                logger.error("Failed to generate embedding", error=str(e))
+            response = self.client.embeddings.create(
+                input=text,
+                model=self.embedding_model
+            )
+            return response.data[0].embedding
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                if getattr(settings, "allow_gemini_embedding_fallback", False):
+                    logger.warning("OpenAI 429 (embedding): falling back to Gemini")
+                    from app.repositories.implementations.gemini_service import GeminiService
+                    return await GeminiService().generate_embedding(text)
+                logger.warning("OpenAI 429 (embedding): skipping fallback to avoid mixed vector spaces; returning []")
                 return []
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+            logger.error("OpenAI API error (non-429) embedding", error=str(e))
+            return []
+        except Exception as e:
+            logger.error("Failed to generate embedding", error=str(e))
+            return []
 
     async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
         """Improve an existing test case based on feedback using Copilot Models API (async wrapper)"""
         def sync_call():
-            try:
-                prompt = self._build_improvement_prompt(test_case, feedback)
-                response = self.client.chat.completions.create(
-                    messages=[
-                        {"role": "system", "content": self._get_improvement_system_prompt()},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    top_p=0.9,
-                    model=self.model
-                )
-                improved_content = response.choices[0].message.content or ""
-                parsed = self._parse_improved_test_case(improved_content, test_case)
-                return TestCase(**parsed)
-            except Exception as e:
-                logger.error("Failed to improve test case", error=str(e))
-                return test_case
-        return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+            prompt = self._build_improvement_prompt(test_case, feedback)
+            response = self.client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": self._get_improvement_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                top_p=0.9,
+                model=self.model
+            )
+            improved_content = response.choices[0].message.content or ""
+            parsed = self._parse_improved_test_case(improved_content, test_case)
+            return TestCase(**parsed)
+        try:
+            return await asyncio.get_event_loop().run_in_executor(None, sync_call)
+        except (RateLimitError, APIStatusError) as e:
+            status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
+            if status == 429 or isinstance(e, RateLimitError):
+                logger.warning("OpenAI 429 (improve): falling back to Gemini")
+                from app.repositories.implementations.gemini_service import GeminiService
+                return await GeminiService().improve_test_case(test_case, feedback)
+            logger.error("OpenAI API error (non-429) improve", error=str(e))
+            return test_case
+        except Exception as e:
+            logger.error("Failed to improve test case", error=str(e))
+            return test_case
     
-    # async def generate_embedding(self, text: str) -> List[float]:
-    #     """Generate embedding for a given text"""
-    #     try:
-    #         response = await self.client.embeddings.create(
-    #             model=self.embedding_model,
-    #             input=text
-    #         )
-    #         return response.data[0].embedding
-            
-    #     except Exception as e:
-    #         logger.error("Failed to generate embedding", text=text[:100], error=str(e))
-    #         return []
-    
-    # async def improve_test_case(self, test_case: TestCase, feedback: str) -> TestCase:
-    #     """Improve an existing test case based on feedback"""
-    #     try:
-    #         prompt = self._build_improvement_prompt(test_case, feedback)
-            
-    #         response = await self.client.chat.completions.create(
-    #             model=self.model,
-    #             messages=[
-    #                 {"role": "system", "content": self._get_improvement_system_prompt()},
-    #                 {"role": "user", "content": prompt}
-    #             ],
-    #             temperature=0.5,
-    #             max_tokens=2000
-    #         )
-            
-    #         improved_content = response.choices[0].message.content
-    #         improved_data = self._parse_improved_test_case(improved_content, test_case)
-            
-    #         logger.info("Test case improved successfully", test_case_id=test_case.id)
-            
-    #         return TestCase(**improved_data)
-            
-    #     except Exception as e:
-    #         logger.error("Failed to improve test case", 
-    #                     test_case_id=test_case.id, error=str(e))
-    #         return test_case  # Return original if improvement fails
+   
     
     def _get_system_prompt(self) -> str:
         """Get system prompt for test case generation"""
-        return """You are an expert test case generator. Generate comprehensive, well-structured test cases based on feature descriptions and acceptance criteria.
-
-Your response should be in JSON format with the following structure:
-{
-  "title": "Clear, concise test case title",
-  "description": "Detailed description of what this test case validates",
-  "test_steps": [
-    {
-      "step_number": 1,
-      "action": "Action to perform",
-      "expected_result": "Expected outcome",
-      "test_data": "Any test data needed (optional)"
-    }
-  ],
-  "expected_result": "Overall expected result of the test case",
-  "preconditions": "Any setup or preconditions needed"
-}
-
-Ensure test cases are:
-- Clear and unambiguous
-- Include specific test steps
-- Cover edge cases when relevant
-- Follow testing best practices
-- Include appropriate test data"""
+        return (
+            "You are an expert test case generator. Generate comprehensive, well-structured test cases based on the provided feature description and acceptance criteria.\n\n"
+            "IMPORTANT: Reply with a single, valid JSON object ONLY (no surrounding markdown, explanation text, or backticks). "
+            "The JSON must exactly follow the schema below and include all required fields. If a value is not available, "
+            "provide a reasonable default (empty string, empty list, or N/A) rather than omitting the field.\n\n"
+            "Required JSON structure:\n"
+            "{\n"
+            "  \"title\": string,\n"
+            "  \"description\": string,\n"
+            "  \"test_steps\": [\n"
+            "    {\"step_number\": int, \"action\": string, \"expected_result\": string, \"test_data\": string}\n"
+            "  ],\n"
+            "  \"expected_result\": string,\n"
+            "  \"preconditions\": string\n"
+            "}\n\n"
+            "Additional notes:\n"
+            "- Make sure \"test_steps\" is an array with at least one step.\n"
+            "- \"step_number\" should start at 1 and increment.\n"
+            "- Keep text concise but complete. Use clear actions and expected results.\n"
+            "- Do NOT include any commentary or explanation outside the JSON object.\n\n"
+            "If you cannot produce a valid JSON object, return the empty JSON object: {}"
+        )
     
     def _get_improvement_system_prompt(self) -> str:
         """Get system prompt for test case improvement"""
@@ -208,8 +280,41 @@ Please provide an improved version addressing the feedback while maintaining the
             if json_match:
                 parsed_data = json.loads(json_match.group())
             else:
-                # Fallback to manual parsing if JSON extraction fails
-                parsed_data = self._manual_parse_test_case(generated_content)
+                # Fallback: ask the model to extract/return ONLY the JSON object from its previous output
+                parsed_data = None
+                try:
+                    extraction_prompt = (
+                        "The assistant output below may contain a JSON object.\n"
+                        "Please extract and return ONLY the JSON object. If no JSON can be found, return {}.\n\n" + generated_content
+                    )
+                    extraction_response = self.client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": "You are a JSON extractor. Respond ONLY with the JSON object found in the user content."},
+                            {"role": "user", "content": extraction_prompt}
+                        ],
+                        temperature=0.0,
+                        top_p=1.0,
+                        model=self.model
+                    )
+
+                    extracted_text: str = ""
+                    if hasattr(extraction_response, 'choices') and extraction_response.choices:
+                        ch = extraction_response.choices[0]
+                        if hasattr(ch, 'message') and getattr(ch.message, 'content', None):
+                            extracted_text = ch.message.content or ""
+                        else:
+                            extracted_text = getattr(ch, 'text', '') or ''
+
+                    extracted_text = extracted_text or ""
+                    json_match = re.search(r'\{.*\}', extracted_text, re.DOTALL)
+                    if json_match:
+                        parsed_data = json.loads(json_match.group())
+                except Exception as ex:
+                    logger.warning("Fallback JSON extraction failed", error=str(ex))
+
+                if parsed_data is None:
+                    # Final fallback to manual parsing
+                    parsed_data = self._manual_parse_test_case(generated_content)
             
             # Convert test_steps to TestStep objects
             test_steps = []
@@ -317,5 +422,6 @@ Please provide an improved version addressing the feedback while maintaining the
             ],
             expected_result="Test passes successfully",
             created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            updated_at=datetime.utcnow(),
+            jira_issue_key=None
         )

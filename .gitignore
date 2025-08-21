@@ -52,3 +52,9 @@ coverage.xml
 *.bak
 *.swp
 *.tmp
+
+#Response files for testing
+response*.json
+send_payload*.py
+generate_mock_jira_responses.py
+send_jira_payload.py
