@@ -106,6 +106,14 @@ def create_app() -> FastAPI:
 # Create the application instance
 app = create_app()
 
+# === ADD THIS NEW CODE BLOCK ===
+# This is the new endpoint for the root URL
+@app.get("/")
+def read_root():
+    """Root endpoint to confirm the API is running."""
+    return {"status": "ok", "message": "Test Case Generator API is running."}
+# ===============================
+
 
 @app.on_event("startup")
 async def startup_event():

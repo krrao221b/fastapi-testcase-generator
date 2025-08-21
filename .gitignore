@@ -29,9 +29,9 @@ dist/
 *.egg
 
 # Database and data files
-*.db
-data/
-*.sqlite3
+# *.db
+# data/
+# *.sqlite3
 
 # Logs
 *.log
