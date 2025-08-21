@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -38,7 +38,8 @@ class TestCaseBase(BaseModel):
 
 
 class TestCaseCreate(TestCaseBase):
-    pass
+    # Allow callers to set status at create time; if None, DB default applies
+    status: Optional[TestCaseStatus] = None
 
 
 class TestCaseUpdate(BaseModel):
@@ -118,6 +119,40 @@ class SaveAsNewTestCaseRequest(BaseModel):
     jira_issue_key: Optional[str] = None
     # Explicitly bypass duplicate/skip logic for this flow
     force_save: bool = True
+    
+    # Accept case-insensitive strings like "High", "HIGH" for priority
+    @field_validator("priority", mode="before")
+    @classmethod
+    def _normalize_priority(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, TestCasePriority):
+            return v
+        # Accept dicts like {"value": "High"}
+        if isinstance(v, dict):
+            v = v.get("value", v)
+        try:
+            s = str(v).strip().lower()
+            return TestCasePriority(s)
+        except Exception:
+            # Let pydantic raise a validation error later if it's truly invalid
+            return v
+
+    # Accept case-insensitive strings or dicts for status as well
+    @field_validator("status", mode="before")
+    @classmethod
+    def _normalize_status(cls, v):
+        if v is None:
+            return v
+        if isinstance(v, TestCaseStatus):
+            return v
+        if isinstance(v, dict):
+            v = v.get("value", v)
+        try:
+            s = str(v).strip().lower()
+            return TestCaseStatus(s)
+        except Exception:
+            return v
     
 class SaveAsNewTestCaseResponse(BaseModel):
     test_case: TestCase

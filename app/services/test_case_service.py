@@ -856,6 +856,7 @@ class TestCaseService:
                 acceptance_criteria=payload.acceptance_criteria
                 or base.acceptance_criteria,
                 priority=payload.priority or base.priority,
+                status=payload.status or getattr(base, "status", None),
                 tags=merged_tags,
                 preconditions=(
                     payload.preconditions

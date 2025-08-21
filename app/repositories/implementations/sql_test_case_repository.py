@@ -14,7 +14,8 @@ class SQLTestCaseRepository(ITestCaseRepository):
     
     async def create(self, test_case: TestCaseCreate) -> TestCase:
         """Create a new test case"""
-        db_test_case = TestCaseModel(**test_case.model_dump())
+        # Exclude None so DB defaults (like status) can apply when omitted
+        db_test_case = TestCaseModel(**test_case.model_dump(exclude_none=True))
         self.db.add(db_test_case)
         self.db.commit()
         self.db.refresh(db_test_case)
