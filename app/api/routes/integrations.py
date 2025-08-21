@@ -11,8 +11,6 @@ logger = structlog.get_logger()
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
-
-
 # GET endpoint to fetch JIRA ticket details by ticket key
 @router.get("/jira/{ticket_key}")
 async def get_jira_ticket(
@@ -54,40 +52,89 @@ async def get_jira_ticket(
 
 @router.post("/zephyr/push", response_model=PushTestcaseResponse, status_code=status.HTTP_201_CREATED)
 async def push_zephyr_testcase(data: PushTestcaseRequest):
-        """Push a test case to Zephyr, link to Jira, and add test steps."""
-        try:
-            project_key = data.jira_id.split("-")[0]
-            testcase_name = data.testcase_name or f"Test Case for {data.jira_id}"
-            objective = data.objective or f"To validate behavior for {data.jira_id}"
+    """Push a test case to Zephyr, link to Jira, and add test steps."""
+    try:
+        project_key = data.jira_id.split("-")[0]
+        testcase_name = data.testcase_name or f"Test Case for {data.jira_id}"
+        objective = data.objective or f"To validate behavior for {data.jira_id}"
 
-            async with httpx.AsyncClient() as client:
-                # 1) Create test case
-                created = await ZephyrService.create_testcase(project_key, testcase_name, objective, data.precondition, client)
-                test_case_key = created.get("key")
-                test_case_id = created.get("id")
+        async with httpx.AsyncClient() as client:
+            # 1) First get JIRA issue ID
+            issue_id = await JiraService.get_issue_id(data.jira_id, client)
+            if not issue_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"JIRA issue {data.jira_id} not found"
+                )
+
+            # 2) Check for duplicate test case
+            is_duplicate = await ZephyrService.check_duplicate_testcase(
+                issue_id=issue_id,
+                testcase_name=testcase_name,
+                client=client
+            )
+
+            if is_duplicate:
+                # Generate suggested names
+                suggested_names = [
+                    f"{testcase_name} - v2",
+                    f"{testcase_name} - Updated",
+                    f"{testcase_name} - Revised",
+                    f"{testcase_name} ({data.jira_id})",
+                    f"{testcase_name} - Additional"
+                ]
                 
-                # Validate that test case was created successfully
-                if not test_case_key or not test_case_id:
-                    logger.error("Failed to create test case in Zephyr", created=created)
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="Failed to create test case in Zephyr Scale"
-                    )
+                logger.warning(
+                    "Duplicate test case name detected",
+                    jira_id=data.jira_id,
+                    test_case_name=testcase_name
+                )
+                
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "Duplicate Test Case Name",
+                        "message": f"A test case with the name '{testcase_name}' already exists for JIRA issue {data.jira_id}. Please edit the name and try again.",
+                        "type": "DUPLICATE_TEST_CASE",
+                        "user_action": "EDIT_NAME",
+                        "original_name": testcase_name,
+                        "jira_id": data.jira_id,
+                        "suggested_names": suggested_names,
+                        "instructions": "Choose one of the suggested names or create your own unique name for this test case."
+                    }
+                )
 
-                # 2) Link to Jira issue (if Jira credentials available)
-                linked = False
-                issue_id = await JiraService.get_issue_id(data.jira_id, client)
-                if issue_id:
-                    linked = await ZephyrService.link_to_jira_issue(test_case_key, issue_id, client)
+            # 3) Create test case if no duplicate found
+            created = await ZephyrService.create_testcase(
+                project_key, 
+                testcase_name, 
+                objective, 
+                data.precondition, 
+                client
+            )
+            test_case_key = created.get("key")
+            test_case_id = created.get("id")
+            
+            if not test_case_key or not test_case_id:
+                logger.error("Failed to create test case in Zephyr", created=created)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create test case in Zephyr Scale"
+                )
 
-                # 3) Push steps
-                steps_pushed = await ZephyrService.add_test_steps(test_case_key, data.test_steps, client)
+            # 4) Link to Jira issue
+            linked = await ZephyrService.link_to_jira_issue(test_case_key, issue_id, client)
 
-            logger.info("Successfully pushed test case to Zephyr", 
-                       test_case_key=test_case_key, 
-                       jira_id=data.jira_id,
-                       linked=linked, 
-                       steps_pushed=steps_pushed)
+            # 5) Push steps
+            steps_pushed = await ZephyrService.add_test_steps(test_case_key, data.test_steps, client)
+
+            logger.info(
+                "Successfully pushed test case to Zephyr", 
+                test_case_key=test_case_key, 
+                jira_id=data.jira_id,
+                linked=linked, 
+                steps_pushed=steps_pushed
+            )
 
             return PushTestcaseResponse(
                 message="Test case created and steps pushed." if steps_pushed else "Test case created, but pushing steps failed.",
@@ -97,13 +144,15 @@ async def push_zephyr_testcase(data: PushTestcaseRequest):
                 steps_pushed=steps_pushed
             )
             
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("Failed to push test case to Zephyr", 
-                        jira_id=data.jira_id, 
-                        error=str(e))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to push test case to Zephyr Scale: {str(e)}"
-            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            "Failed to push test case to Zephyr", 
+            jira_id=data.jira_id, 
+            error=str(e)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to push test case to Zephyr Scale: {str(e)}"
+        )
